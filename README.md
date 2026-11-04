@@ -1,4 +1,10 @@
-# Diffactly - A Free macOS Diff Checker
+<p align="center">
+  <img src="assets/icon.png" width="160" alt="Diffactly app icon">
+</p>
+
+<h1 align="center">Diffactly</h1>
+
+<p align="center"><b>A free, fast, native macOS diff checker.</b></p>
 
 A fast, native and free macOS text comparison tool with real-time diff highlighting and a minimal interface.
 
