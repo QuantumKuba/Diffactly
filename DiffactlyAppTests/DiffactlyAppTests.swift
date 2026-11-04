@@ -91,4 +91,53 @@ final class DiffDocumentTests: XCTestCase {
         XCTAssertEqual(full.items.count, 20)
         XCTAssertNotNil(folded.itemID(forRow: result.hunks[0].rowRange.lowerBound))
     }
+
+    // MARK: Word counts
+
+    func testWordTotalsFollowBothTexts() {
+        let document = DiffDocument(left: "one two", right: "one two three\nfour")
+        XCTAssertEqual(document.leftCounts.words, 2)
+        XCTAssertEqual(document.rightCounts, TextCounts(words: 4, characters: 18, lines: 2))
+
+        document.leftText = ""
+        XCTAssertEqual(document.leftCounts, .zero)
+        document.setText("alpha beta gamma", for: .left)
+        XCTAssertEqual(document.leftCounts.words, 3)
+    }
+
+    func testSelectionCountsTrackTheSelectedText() {
+        let document = DiffDocument(left: "a", right: "b")
+        document.mode = .edit
+        XCTAssertNil(document.selection)
+
+        document.updateSelection(side: .right, selectedText: "alpha beta")
+        XCTAssertEqual(document.selection?.side, .right)
+        XCTAssertEqual(document.selection?.counts.words, 2)
+        XCTAssertEqual(document.selection?.counts.characters, 10)
+
+        // Clicking in the other editor doesn't wipe a selection it doesn't own…
+        document.updateSelection(side: .left, selectedText: "")
+        XCTAssertEqual(document.selection?.counts.words, 2)
+        // …but the owner collapsing its selection does.
+        document.updateSelection(side: .right, selectedText: "")
+        XCTAssertNil(document.selection)
+    }
+
+    func testSelectionMovesToTheEditorThatSelectedLast() {
+        let document = DiffDocument(left: "a", right: "b")
+        document.mode = .edit
+        document.updateSelection(side: .right, selectedText: "one two three")
+        document.updateSelection(side: .left, selectedText: "four")
+        XCTAssertEqual(document.selection?.side, .left)
+        XCTAssertEqual(document.selection?.counts.words, 1)
+    }
+
+    func testLeavingEditModeDropsTheSelection() {
+        let document = DiffDocument(left: "a", right: "b")
+        document.mode = .edit
+        document.updateSelection(side: .left, selectedText: "some words")
+        document.mode = .split
+        XCTAssertNil(document.selection)
+        document.mode = .edit   // restore the persisted default for other tests
+    }
 }

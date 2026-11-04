@@ -34,10 +34,16 @@ final class DiffDocument: ObservableObject {
         var rowID: Int
     }
 
+    /// Totals for the text currently selected in an editor.
+    struct SelectionCounts: Equatable {
+        var side: Side
+        var counts: TextCounts
+    }
+
     // MARK: Inputs
 
-    @Published var leftText: String { didSet { if leftText != oldValue { scheduleDiff() } } }
-    @Published var rightText: String { didSet { if rightText != oldValue { scheduleDiff() } } }
+    @Published var leftText: String { didSet { if leftText != oldValue { leftCounts = TextCounts(leftText); scheduleDiff() } } }
+    @Published var rightText: String { didSet { if rightText != oldValue { rightCounts = TextCounts(rightText); scheduleDiff() } } }
     @Published var leftName: String?
     @Published var rightName: String?
 
@@ -50,7 +56,13 @@ final class DiffDocument: ObservableObject {
             scheduleDiff(immediately: true)
         }
     }
-    @Published var mode: Mode { didSet { defaults.set(mode.rawValue, forKey: Keys.mode) } }
+    @Published var mode: Mode {
+        didSet {
+            defaults.set(mode.rawValue, forKey: Keys.mode)
+            // Only the editors report selections; leaving them drops a stale one.
+            if mode != .edit { selection = nil }
+        }
+    }
     @Published var collapseUnchanged: Bool { didSet { defaults.set(collapseUnchanged, forKey: Keys.collapse); expandedFolds.removeAll() } }
     @Published var wrapLines: Bool { didSet { defaults.set(wrapLines, forKey: Keys.wrap) } }
     @Published var showInsights: Bool { didSet { defaults.set(showInsights, forKey: Keys.insights) } }
@@ -58,6 +70,11 @@ final class DiffDocument: ObservableObject {
     // MARK: Output
 
     @Published private(set) var result: DiffResult = .empty
+    /// Word / character / line totals of each side, kept in sync with the text.
+    @Published private(set) var leftCounts: TextCounts
+    @Published private(set) var rightCounts: TextCounts
+    /// What the user has selected in one of the editors (nil when nothing is).
+    @Published private(set) var selection: SelectionCounts?
     @Published private(set) var wordShifts: [DiffInsights.WordShift] = []
     @Published private(set) var isComputing = false
     @Published private(set) var leftHighlights = EditorHighlights()
@@ -82,6 +99,8 @@ final class DiffDocument: ObservableObject {
     init(left: String = "This is some text on the left side", right: String = "This is some new text on the right side") {
         leftText = left
         rightText = right
+        leftCounts = TextCounts(left)
+        rightCounts = TextCounts(right)
         options = Self.loadOptions()
         mode = Mode(rawValue: UserDefaults.standard.string(forKey: Keys.mode) ?? "") ?? .edit
         collapseUnchanged = UserDefaults.standard.object(forKey: Keys.collapse) as? Bool ?? false
@@ -214,6 +233,18 @@ final class DiffDocument: ObservableObject {
             open(url, into: leftName == nil ? .left : .right)
         }
         if mode == .edit, urls.count >= 2 { mode = .split }
+    }
+
+    /// Called by an editor whenever its selection changes. An empty selection
+    /// only clears the state if that same side owned it, so the other editor's
+    /// selection isn't wiped by a click here.
+    func updateSelection(side: Side, selectedText: String) {
+        if selectedText.isEmpty {
+            if selection?.side == side { selection = nil }
+        } else {
+            let next = SelectionCounts(side: side, counts: TextCounts(selectedText))
+            if selection != next { selection = next }
+        }
     }
 
     func showOpenPanel(for side: Side) {
