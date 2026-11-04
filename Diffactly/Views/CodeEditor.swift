@@ -11,6 +11,8 @@ struct CodeEditor: NSViewRepresentable {
     var focusRequest: DiffDocument.FocusRequest?
     var focusLines: ClosedRange<Int>?
     var onFileDrop: (URL) -> Void
+    /// Receives the selected text (empty when the caret is just a caret).
+    var onSelectionChange: (String) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -126,6 +128,15 @@ struct CodeEditor: NSViewRepresentable {
         init(_ parent: CodeEditor) {
             self.parent = parent
             self.wrapLines = parent.wrapLines
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            let range = tv.selectedRange()
+            let selected = range.length > 0 ? (tv.string as NSString).substring(with: range) : ""
+            // AppKit can fire this while SwiftUI is mid-update (e.g. when the text
+            // is replaced externally); publishing then is illegal, so hop a turn.
+            DispatchQueue.main.async { [weak self] in self?.parent.onSelectionChange(selected) }
         }
 
         func textDidChange(_ notification: Notification) {
