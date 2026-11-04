@@ -103,7 +103,8 @@ struct EditorPane: View {
                 wrapLines: document.wrapLines,
                 focusRequest: document.focusRequest,
                 focusLines: side == .left ? document.focusRequest?.leftLines : document.focusRequest?.rightLines,
-                onFileDrop: { url in document.open(url, into: side) }
+                onFileDrop: { url in document.open(url, into: side) },
+                onSelectionChange: { selected in document.updateSelection(side: side, selectedText: selected) }
             )
         }
     }
@@ -124,9 +125,26 @@ struct EditorPane: View {
 struct StatusBar: View {
     @ObservedObject var document: DiffDocument
 
+    /// The bar picks the richest layout that fits, so narrow windows (or an open
+    /// Insights panel) drop detail instead of truncating labels mid-word.
+    private enum Detail { case full, compact, minimal }
+
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            row(.full)
+            row(.compact)
+            row(.minimal)
+        }
+        .font(.callout)
+        .lineLimit(1)
+        .padding(.horizontal, 12)
+        .frame(height: 26)
+        .background(.bar)
+    }
+
+    private func row(_ detail: Detail) -> some View {
         let stats = document.result.stats
-        HStack(spacing: 14) {
+        return HStack(spacing: 14) {
             if document.result.isIdentical {
                 Label(document.leftText.isEmpty && document.rightText.isEmpty ? "Nothing to compare" : "Identical", systemImage: "checkmark.circle")
                     .foregroundStyle(.secondary)
@@ -134,26 +152,79 @@ struct StatusBar: View {
                 chip("−\(stats.removals)", "removals", DiffPalette.removed)
                 chip("+\(stats.additions)", "additions", DiffPalette.added)
                 if stats.movedLines > 0 { chip("⇄ \(stats.movedLines)", "moved", DiffPalette.moved) }
-                Text("\(Int((stats.similarity * 100).rounded(.down)))% similar").foregroundStyle(.secondary)
+                if detail != .minimal {
+                    Text("\(Int((stats.similarity * 100).rounded(.down)))% similar").foregroundStyle(.secondary)
+                }
             }
-            if document.result.rows.contains(where: \.hasIgnoredDifferences) {
+            if detail != .minimal, document.result.rows.contains(where: \.hasIgnoredDifferences) {
                 Label("Ignored differences hidden", systemImage: "eye.slash").foregroundStyle(.tertiary)
             }
-            Spacer()
+            Spacer(minLength: 8)
             if document.isComputing {
                 ProgressView().controlSize(.small)
             }
-            if document.hasChanges {
+            if let selection = document.selection {
+                selectionLabel(selection, detail)
+            }
+            wordTotals(detail)
+            if detail != .minimal, document.hasChanges {
                 Text(position).foregroundStyle(.secondary).monospacedDigit()
             }
-            Text(document.options.level.title)
-                .foregroundStyle(.tertiary)
+            if detail == .full {
+                Text(document.options.level.title)
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .font(.callout)
-        .padding(.horizontal, 12)
-        .frame(height: 26)
-        .background(.bar)
     }
+
+    // MARK: Word counts
+
+    /// "12 words, 68 chars selected" – only shown while text is selected in an editor.
+    private func selectionLabel(_ selection: DiffDocument.SelectionCounts, _ detail: Detail) -> some View {
+        let c = selection.counts
+        let text = detail == .full
+            ? "\(Self.plural(c.words, "word")), \(Self.plural(c.characters, "char")) selected"
+            : "\(Self.plural(c.words, "word")) selected"
+        return Text(text)
+            .foregroundStyle(Color.accentColor)
+            .monospacedDigit()
+            .help("Selected in \(selection.side.title.lowercased()) text: \(Self.plural(c.words, "word")), \(Self.plural(c.characters, "character")), \(Self.plural(c.lines, "line"))")
+    }
+
+    /// Total words per side with the net change, e.g. "Original 120 · Changed 134 words (+14)".
+    @ViewBuilder
+    private func wordTotals(_ detail: Detail) -> some View {
+        let left = document.leftCounts, right = document.rightCounts
+        let delta = right.words - left.words
+        HStack(spacing: 4) {
+            if detail == .full {
+                Text("Original").foregroundStyle(.secondary)
+                Text(left.words.formatted()).monospacedDigit()
+                Text("·").foregroundStyle(.tertiary)
+                Text("Changed").foregroundStyle(.secondary)
+                Text(right.words.formatted()).monospacedDigit()
+                Text("words").foregroundStyle(.secondary)
+            } else {
+                Text(right.words.formatted()).monospacedDigit()
+                Text(right.words == 1 ? "word" : "words").foregroundStyle(.secondary)
+            }
+            if delta != 0, detail != .minimal {
+                Text("(\(delta > 0 ? "+" : "−")\(abs(delta).formatted()))")
+                    .monospacedDigit()
+                    .foregroundStyle(delta > 0 ? DiffPalette.added : DiffPalette.removed)
+            }
+        }
+        .help("""
+            Original: \(Self.plural(left.words, "word")), \(Self.plural(left.characters, "character")), \(Self.plural(left.lines, "line"))
+            Changed: \(Self.plural(right.words, "word")), \(Self.plural(right.characters, "character")), \(Self.plural(right.lines, "line"))
+            """)
+    }
+
+    private static func plural(_ n: Int, _ noun: String) -> String {
+        "\(n.formatted()) \(noun)\(n == 1 ? "" : "s")"
+    }
+
+    // MARK: Diff summary
 
     private var position: String {
         let total = document.result.hunks.count
