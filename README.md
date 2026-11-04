@@ -8,6 +8,20 @@
 
 A fast, native and free macOS text comparison tool with real-time diff highlighting and a minimal interface.
 
+## Screenshots
+
+**Review a code change** – side-by-side, with word- and character-level highlights inside edited lines.
+
+<img src="assets/screenshots/split-view-dark.png" alt="Diffactly split view comparing two versions of a TypeScript file in dark mode">
+
+**Check a config change before you ship it** – a unified view in light mode, like `git diff` but readable.
+
+<img src="assets/screenshots/unified-view-light.png" alt="Diffactly unified view showing a docker-compose.yml upgrade in light mode">
+
+**Compare document revisions** – with the optional Insights panel: similarity, line composition, a clickable change map and word shifts.
+
+<img src="assets/screenshots/insights-light.png" alt="Diffactly split view of release notes with the Insights panel open">
+
 ## Features
 
 - **Accurate diffs**: lines are aligned with a weighted algorithm that favours long, meaningful matches (re-indented lines still line up), and edited lines are paired by similarity so you see *what* changed inside them
