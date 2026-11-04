@@ -30,6 +30,7 @@ A fast, native and free macOS text comparison tool with real-time diff highlight
 - **Edit, Split and Unified views**: live highlighting while you type, or an aligned read-only comparison with collapsible unchanged lines and next/previous change navigation (⌃⌘↓ / ⌃⌘↑)
 - **Ignore options**: whitespace, case, quote style, dash style and custom strings
 - **Transforms**: lowercase, sort lines, join lines, trim whitespace
+- **Word counts**: live word totals for both texts (with the net change) in the status bar, plus the words and characters in your selection while editing
 - **Insights (optional)**: toggle the chart button (⌥⌘I) for similarity, line composition, a clickable change map and word-frequency shifts
 - **Open files** with ⌘O / ⇧⌘O, drag-and-drop, Finder's *Open With*, or `diffactly --gui`
 - **Auto, Dark and Light modes**
