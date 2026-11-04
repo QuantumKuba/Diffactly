@@ -1,0 +1,6 @@
+# Build output
+build/
+DiffactlyKit/.build/
+DiffactlyKit/.swiftpm/
+xcuserdata/
+.DS_Store
