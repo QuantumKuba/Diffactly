@@ -1,0 +1,160 @@
+import SwiftUI
+import AppKit
+import DiffactlyCore
+
+struct DiffToolbar: ToolbarContent {
+    @ObservedObject var document: DiffDocument
+    @Binding var showIgnoreRules: Bool
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Picker("View", selection: $document.mode) {
+                ForEach(DiffDocument.Mode.allCases) { mode in
+                    Label(mode.title, systemImage: mode.systemImage).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelStyle(.titleAndIcon)
+            .help("Edit the inputs, or view the aligned comparison side by side or unified")
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            Picker("Precision", selection: $document.options.level) {
+                ForEach(DiffLevel.allCases) { level in Text(level.title).tag(level) }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+            .help("How finely changes inside a line are highlighted")
+
+            Menu {
+                OptionToggles(document: document)
+                Divider()
+                Button("Ignore Rules…") { showIgnoreRules = true }
+            } label: {
+                Label("Options", systemImage: optionsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+            }
+            .help("Ignore whitespace, case, quotes, dashes or custom strings")
+
+            Menu {
+                ForEach(TextTransform.allCases) { t in
+                    Button(t.title) { document.apply(t) }
+                }
+            } label: {
+                Label("Transform", systemImage: "wand.and.stars")
+            }
+            .help("Transform both texts (undoable)")
+
+            Button {
+                document.swapSides()
+            } label: {
+                Label("Swap", systemImage: "arrow.left.arrow.right")
+            }
+            .help("Swap original and changed")
+
+            ControlGroup {
+                Button { document.previousChange() } label: { Label("Previous Change", systemImage: "chevron.up") }
+                    .help("Previous change (⌃⌘↑)")
+                Button { document.nextChange() } label: { Label("Next Change", systemImage: "chevron.down") }
+                    .help("Next change (⌃⌘↓)")
+            }
+            .disabled(!document.hasChanges)
+
+            Toggle(isOn: $document.showInsights) {
+                Label("Insights", systemImage: "chart.bar.xaxis")
+            }
+            .help("Show graphs about this comparison (⌥⌘I)")
+
+            TitleBarAccessory()
+        }
+    }
+
+    private var optionsActive: Bool {
+        let o = document.options
+        return o.ignoreWhitespace || o.ignoreCase || o.ignoreQuotes || o.ignoreDashes || !o.ignoredStrings.isEmpty
+    }
+}
+
+struct OptionToggles: View {
+    @ObservedObject var document: DiffDocument
+
+    var body: some View {
+        Toggle("Ignore Whitespace", isOn: $document.options.ignoreWhitespace)
+        Toggle("Ignore Case", isOn: $document.options.ignoreCase)
+        Toggle("Ignore Quote Style", isOn: $document.options.ignoreQuotes)
+        Toggle("Ignore Dash Style", isOn: $document.options.ignoreDashes)
+        Divider()
+        Toggle("Detect Moved Lines", isOn: $document.options.detectMoves)
+        Toggle("Collapse Unchanged Lines", isOn: $document.collapseUnchanged)
+        Toggle("Wrap Lines", isOn: $document.wrapLines)
+    }
+}
+
+// MARK: - Menu bar commands
+
+struct DiffCommands: Commands {
+    @FocusedObject private var document: DiffDocument?
+
+    var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Divider()
+            Button("Open Original…") { document?.showOpenPanel(for: .left) }
+                .keyboardShortcut("o")
+                .disabled(document == nil)
+            Button("Open Changed…") { document?.showOpenPanel(for: .right) }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(document == nil)
+        }
+
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Copy as Unified Diff") {
+                guard let patch = document?.unifiedPatch else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(patch, forType: .string)
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled(document?.hasChanges != true)
+        }
+
+        CommandMenu("Compare") {
+            ForEach(Array(DiffDocument.Mode.allCases.enumerated()), id: \.element) { index, mode in
+                Button(mode == .edit ? "Edit Inputs" : "\(mode.title) View") { document?.mode = mode }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+            }
+            Divider()
+            Button("Next Change") { document?.nextChange() }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .control])
+                .disabled(document?.hasChanges != true)
+            Button("Previous Change") { document?.previousChange() }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .control])
+                .disabled(document?.hasChanges != true)
+            Divider()
+            Picker("Precision", selection: binding(\.options.level, default: .smart)) {
+                ForEach(DiffLevel.allCases) { Text($0.title).tag($0) }
+            }
+            Toggle("Ignore Whitespace", isOn: binding(\.options.ignoreWhitespace, default: false))
+            Toggle("Ignore Case", isOn: binding(\.options.ignoreCase, default: false))
+            Toggle("Ignore Quote Style", isOn: binding(\.options.ignoreQuotes, default: false))
+            Toggle("Ignore Dash Style", isOn: binding(\.options.ignoreDashes, default: false))
+            Toggle("Detect Moved Lines", isOn: binding(\.options.detectMoves, default: true))
+            Divider()
+            Menu("Transform Text") {
+                ForEach(TextTransform.allCases) { t in Button(t.title) { document?.apply(t) } }
+            }
+            Button("Swap Sides") { document?.swapSides() }
+                .keyboardShortcut("s", modifiers: [.command, .option])
+            Divider()
+            Toggle("Collapse Unchanged Lines", isOn: binding(\.collapseUnchanged, default: false))
+            Toggle("Wrap Lines", isOn: binding(\.wrapLines, default: true))
+            Toggle("Show Insights", isOn: binding(\.showInsights, default: false))
+                .keyboardShortcut("i", modifiers: [.command, .option])
+        }
+    }
+
+    private func binding<T>(_ keyPath: ReferenceWritableKeyPath<DiffDocument, T>, default value: T) -> Binding<T> {
+        Binding(
+            get: { document?[keyPath: keyPath] ?? value },
+            set: { document?[keyPath: keyPath] = $0 }
+        )
+    }
+}
