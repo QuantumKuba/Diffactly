@@ -60,6 +60,7 @@ private struct Builder {
     var leftKeys: [String] = []
     var rightKeys: [String] = []
     var rows: [DiffRow] = []
+    var prose = ProseIndex(left: [], right: [])
 
     init(left: String, right: String, options: DiffOptions) {
         self.options = options
@@ -99,39 +100,80 @@ private struct Builder {
         }
         let runs = differ.diff(a, b)
 
+        prose = ProseIndex(left: leftKeys, right: rightKeys)
         let inline = InlineDiffer(normalizer: normalizer, level: options.level, deadline: deadline)
-        var k = 0
-        while k < runs.count {
-            let run = runs[k]
-            switch run.op {
-            case .equal:
-                for (i, j) in zip(run.a, run.b) { appendPair(i, j, keysEqual: true, inline) }
-                k += 1
-            case .delete:
-                if k + 1 < runs.count, runs[k + 1].op == .insert {
-                    appendChangeRegion(run.a, runs[k + 1].b, inline)
-                    k += 2
-                } else {
-                    for i in run.a { appendRemoved(i) }
-                    k += 1
-                }
-            case .insert:
-                for j in run.b { appendAdded(j) }
-                k += 1
+        for region in regions(runs) {
+            switch region {
+            case .equal(let a, let b):
+                for (i, j) in zip(a, b) { appendPair(i, j, keysEqual: true, inline) }
+            case .change(let a, let b):
+                if a.isEmpty { for j in b { appendAdded(j) } }
+                else if b.isEmpty { for i in a { appendRemoved(i) } }
+                else { appendChangeRegion(a, b, inline) }
             }
         }
 
-        let moves = options.detectMoves ? MoveDetector.detect(rows: &rows, leftKeys: leftKeys, rightKeys: rightKeys, inline: inline) : []
+        let moves = options.detectMoves ? MoveDetector.detect(rows: &rows, leftKeys: leftKeys, rightKeys: rightKeys, inline: inline, prose: prose) : []
+        let relations = options.detectMoves ? MoveDetector.relations(rows: rows, prose: prose) : []
         let hunks = Self.hunks(rows)
         var stats = Self.stats(rows: rows, left: leftSide, right: rightSide)
         stats.trailingNewlineDiffers = leftSide.hasTrailingNewline != rightSide.hasTrailingNewline
         stats.lineEndingsDiffer = leftSide.usesCRLF != rightSide.usesCRLF && !leftSide.lines.isEmpty && !rightSide.lines.isEmpty
 
         return DiffResult(
-            rows: rows, hunks: hunks, moves: moves, stats: stats, options: options,
+            rows: rows, hunks: hunks, moves: moves, relations: relations, stats: stats, options: options,
             leftHasTrailingNewline: leftSide.hasTrailingNewline,
             rightHasTrailingNewline: rightSide.hasTrailingNewline
         )
+    }
+
+    // MARK: Regions
+
+    enum Region {
+        case equal(Range<Int>, Range<Int>)
+        case change(Range<Int>, Range<Int>)
+    }
+
+    /// Groups the alignment into equal runs and change regions. Two change
+    /// regions separated only by blank lines are merged when they hold prose:
+    /// paragraphs are separated by blank lines, which the aligner happily
+    /// matches one paragraph out of step — cutting a rewritten section into
+    /// 1×1 regions that would each force-pair unrelated paragraphs.
+    private func regions(_ runs: [EditRun]) -> [Region] {
+        var out: [Region] = []
+        var k = 0
+        while k < runs.count {
+            let run = runs[k]
+            switch run.op {
+            case .equal:
+                out.append(.equal(run.a, run.b)); k += 1
+            case .delete:
+                if k + 1 < runs.count, runs[k + 1].op == .insert {
+                    out.append(.change(run.a, runs[k + 1].b)); k += 2
+                } else {
+                    out.append(.change(run.a, run.b.lowerBound..<run.b.lowerBound)); k += 1
+                }
+            case .insert:
+                out.append(.change(run.a.lowerBound..<run.a.lowerBound, run.b)); k += 1
+            }
+        }
+        var merged: [Region] = []
+        for region in out {
+            if case .change(let a2, let b2) = region,
+               merged.count >= 2,
+               case .equal(let ea, _) = merged[merged.count - 1],
+               case .change(let a1, let b1) = merged[merged.count - 2],
+               ea.count <= 2, ea.allSatisfy({ leftKeys[$0].isEmpty }) {
+                let a = a1.lowerBound..<a2.upperBound, b = b1.lowerBound..<b2.upperBound
+                if a.contains(where: { prose.isProse(.left, $0) }) && b.contains(where: { prose.isProse(.right, $0) }) {
+                    merged.removeLast(2)
+                    merged.append(.change(a, b))
+                    continue
+                }
+            }
+            merged.append(region)
+        }
+        return merged
     }
 
     // MARK: Rows
@@ -165,9 +207,11 @@ private struct Builder {
     }
 
     private mutating func appendChangeRegion(_ removed: Range<Int>, _ added: Range<Int>, _ inline: InlineDiffer) {
+        let prose = prose
         let pairs = LinePairing.pair(
             removed.map { leftKeys[$0] },
-            added.map { rightKeys[$0] }
+            added.map { rightKeys[$0] },
+            prose: { prose.similarity(left: removed.lowerBound + $0, right: added.lowerBound + $1) }
         )
         var i = removed.lowerBound, j = added.lowerBound
         for (pi, pj) in pairs {
@@ -258,19 +302,30 @@ enum LinePairing {
     static let fullSearchLimit = 40_000
 
     /// Returns non-crossing `(removedIndex, addedIndex)` pairs in order.
-    static func pair(_ removed: [String], _ added: [String]) -> [(Int, Int)] {
+    ///
+    /// `prose` gives a content-word similarity for two lines that are both prose
+    /// paragraphs (nil otherwise); it replaces the character measure for them,
+    /// which rates any two paragraphs on the same topic as alike.
+    static func pair(_ removed: [String], _ added: [String], prose: ((Int, Int) -> Double?)? = nil) -> [(Int, Int)] {
         let n = removed.count, m = added.count
         guard n > 0, m > 0 else { return [] }
         let rp = removed.map(BigramProfile.init)
         let ap = added.map(BigramProfile.init)
+        /// Similarity and the bar it has to clear.
+        func rate(_ i: Int, _ j: Int) -> (Double, Double) {
+            if let s = prose?(i, j) { return (s, ProseIndex.pairThreshold) }
+            return (rp[i].similarity(to: ap[j]), threshold)
+        }
 
         if n * m > fullSearchLimit {
             return (0..<min(n, m)).compactMap { i in
-                rp[i].similarity(to: ap[i]) >= threshold ? (i, i) : nil
+                let (sim, bar) = rate(i, i)
+                return sim >= bar ? (i, i) : nil
             }
         }
-        if n == 1 && m == 1 {
-            // A one-for-one replacement is always shown as a modification.
+        if n == 1 && m == 1 && prose?(0, 0) == nil {
+            // A one-for-one replacement is always shown as a modification
+            // (unless both are paragraphs about different things).
             return [(0, 0)]
         }
 
@@ -284,8 +339,8 @@ enum LinePairing {
                 var c: UInt8 = 1
                 let left = score[i * cols + j - 1]
                 if left > best { best = left; c = 2 }
-                let sim = rp[i - 1].similarity(to: ap[j - 1])
-                if sim >= threshold {
+                let (sim, bar) = rate(i - 1, j - 1)
+                if sim >= bar {
                     // Prefer pairs that keep their relative position.
                     let candidate = score[(i - 1) * cols + j - 1] + sim - 0.001 * Double(abs((i - 1) - (j - 1)))
                     if candidate > best { best = candidate; c = 0 }

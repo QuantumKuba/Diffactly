@@ -9,6 +9,11 @@ import Foundation
 ///   in both a removed and an added block, then grows the match up and down in
 ///   lockstep while the lines stay similar — catching blocks that were moved
 ///   *and* edited (renamed variables, rewritten loops, …).
+/// * Pass 4 ("rewritten paragraphs") links single-line prose paragraphs that
+///   were moved and reworded, by content words (`ProseIndex`) — paragraphs are
+///   one line each, below every block size the passes above work with.
+///
+/// `relations(rows:prose:)` then finds the other halves of splits and merges.
 ///
 /// Moved rows get inline segments relative to their counterpart, so an exact
 /// move shows no emphasis and an edited move highlights what changed in transit.
@@ -20,7 +25,8 @@ enum MoveDetector {
     static let editedLineGood = 0.5
     static let editedAverage = 0.55
 
-    static func detect(rows: inout [DiffRow], leftKeys: [String], rightKeys: [String], inline: InlineDiffer) -> [DiffMove] {
+    static func detect(rows: inout [DiffRow], leftKeys: [String], rightKeys: [String], inline: InlineDiffer,
+                       prose: ProseIndex? = nil) -> [DiffMove] {
         let removed = rows.indices.filter { rows[$0].kind == .removed }
         let added = rows.indices.filter { rows[$0].kind == .added }
         guard !removed.isEmpty, !added.isEmpty else { return [] }
@@ -127,7 +133,7 @@ enum MoveDetector {
         // Pass 3 — moved and edited: seed on an exact line, extend in lockstep.
         removedBlocks = blocks(removedNumbers, used: usedRemoved)
         addedBlocks = blocks(addedNumbers, used: usedAdded)
-        guard !removedBlocks.isEmpty, !addedBlocks.isEmpty else { return moves }
+        if !removedBlocks.isEmpty, !addedBlocks.isEmpty {
         var blockOfAdded = [Int: Range<Int>]()
         for b in addedBlocks { for q in b { blockOfAdded[q] = b } }
         let profilesRemoved = removedKeys.map(BigramProfile.init)
@@ -174,7 +180,72 @@ enum MoveDetector {
             }
             if let best { record(best.r, best.a, similarity: min(best.average, 0.99)) }
         }
+        }
+
+        // Pass 4 — paragraphs moved and reworded.
+        if let prose {
+            let ps = removed.indices.filter { !usedRemoved[$0] && prose.isProse(.left, removedNumbers[$0] - 1) }
+            let qs = added.indices.filter { !usedAdded[$0] && prose.isProse(.right, addedNumbers[$0] - 1) }
+            if !ps.isEmpty, !qs.isEmpty, ps.count * qs.count <= maxProsePairs {
+                var candidates: [(p: Int, q: Int, sim: Double)] = []
+                for p in ps {
+                    for q in qs {
+                        let sim = prose.similarity(left: removedNumbers[p] - 1, right: addedNumbers[q] - 1) ?? 0
+                        if sim >= ProseIndex.pairThreshold { candidates.append((p, q, sim)) }
+                    }
+                }
+                // Strongest first; each paragraph moves at most once.
+                for c in candidates.sorted(by: { $0.sim > $1.sim }) where !usedRemoved[c.p] && !usedAdded[c.q] {
+                    record(c.p..<(c.p + 1), c.q..<(c.q + 1), similarity: min(c.sim, 0.99))
+                }
+            }
+        }
         return moves
+    }
+
+    static let maxProsePairs = 250_000
+    /// A split/merge link needs this much shared content…
+    static let relationFloor = 0.25
+    /// …and must beat the line's next-best candidate by this factor.
+    static let relationMargin = 2.5
+
+    /// Paragraphs that share distinctive content with a line other than the one
+    /// they are shown with: the second source of a merge (two paragraphs
+    /// rewritten into one) or the second target of a split.
+    static func relations(rows: [DiffRow], prose: ProseIndex) -> [DiffRelation] {
+        let lefts = rows.filter { $0.left.map { prose.isProse(.left, $0.number - 1) } ?? false }
+        let rights = rows.filter { $0.right.map { prose.isProse(.right, $0.number - 1) } ?? false }
+        guard !lefts.isEmpty, !rights.isEmpty, lefts.count * rights.count <= maxProsePairs else { return [] }
+
+        /// Already shown together: the same row, or both ends of one move.
+        func together(_ l: DiffRow, _ r: DiffRow) -> Bool {
+            l.id == r.id || (l.moveID != nil && l.moveID == r.moveID)
+        }
+        var sims = [[Double]](repeating: [Double](repeating: 0, count: rights.count), count: lefts.count)
+        for (i, l) in lefts.enumerated() {
+            for (j, r) in rights.enumerated() where !together(l, r) {
+                sims[i][j] = prose.similarity(left: l.left!.number - 1, right: r.right!.number - 1) ?? 0
+            }
+        }
+        /// Index of the best candidate and whether it clears the margin over the runner-up.
+        func best(_ values: [Double]) -> (index: Int, clear: Bool)? {
+            guard let top = values.indices.max(by: { values[$0] < values[$1] }), values[top] > 0 else { return nil }
+            let second = values.indices.filter { $0 != top }.map { values[$0] }.max() ?? 0
+            return (top, values[top] >= relationMargin * second)
+        }
+        let bestRight = lefts.indices.map { best(sims[$0]) }
+        let bestLeft = rights.indices.map { j in best(lefts.indices.map { sims[$0][j] }) }
+
+        var out: [DiffRelation] = []
+        for i in lefts.indices {
+            for j in rights.indices where sims[i][j] >= relationFloor && (lefts[i].isChange || rights[j].isChange) {
+                let fromLeft = bestRight[i].map { $0.index == j && $0.clear } ?? false
+                let fromRight = bestLeft[j].map { $0.index == i && $0.clear } ?? false
+                guard fromLeft || fromRight else { continue }
+                out.append(DiffRelation(id: out.count, left: lefts[i].left!.number, right: rights[j].right!.number, similarity: sims[i][j]))
+            }
+        }
+        return out
     }
 
     /// Maximal runs of unused, consecutively numbered lines (indices into the list).

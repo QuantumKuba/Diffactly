@@ -8,11 +8,14 @@ enum DiffPalette {
     static let addedNS = NSColor.systemGreen
     static let modifiedNS = NSColor.systemOrange
     static let movedNS = NSColor.systemPurple
+    /// Split/merge links between paragraphs.
+    static let relatedNS = NSColor.systemTeal
 
     static var removed: Color { Color(nsColor: removedNS) }
     static var added: Color { Color(nsColor: addedNS) }
     static var modified: Color { Color(nsColor: modifiedNS) }
     static var moved: Color { Color(nsColor: movedNS) }
+    static var related: Color { Color(nsColor: relatedNS) }
     static var unchanged: Color { Color.secondary.opacity(0.35) }
 
     /// Dark mode needs slightly stronger tints to read against dark backgrounds.

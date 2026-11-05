@@ -170,7 +170,11 @@ final class DiffDocument: ObservableObject {
     }
 
     func focus(move: DiffMove, side: Side) {
-        let lines = side == .left ? move.from : move.to
+        focus(lines: side == .left ? move.from : move.to, side: side)
+    }
+
+    /// Bring a line range on one side into view (move and relation jumps).
+    func focus(lines: ClosedRange<Int>, side: Side) {
         let row = result.rows.first { side == .left ? $0.left?.number == lines.lowerBound : $0.right?.number == lines.lowerBound }
         focusRequest = FocusRequest(
             hunk: currentHunk ?? 0,

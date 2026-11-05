@@ -177,6 +177,60 @@ final class DiffEngineTests: XCTestCase {
         XCTAssertTrue(exact.rows.filter { $0.moveID != nil }.allSatisfy { !($0.left ?? $0.right)!.hasChangedSegments })
     }
 
+    // MARK: Prose (paragraph per line)
+
+    private let glaciers = "Alpine glaciers have retreated sharply since the nineteenth century, and meltwater from the shrinking ice now feeds rivers that millions of farmers depend on during the dry summer months."
+    private let glaciersRewritten = "Since the nineteenth century the alpine ice has shrunk dramatically; the glaciers' meltwater sustains rivers on which millions of farmers rely through dry summers."
+    private let bees = "Honeybee colonies collapse when parasitic mites spread viruses through the hive, and beekeepers report losing a third of their colonies over a single winter."
+    private let volcano = "The volcano erupted without warning, sending ash columns twelve kilometres into the stratosphere and grounding flights across the northern hemisphere for a week."
+    private let volcanoTail = "Airlines estimated the grounding cost them billions, and regulators later revised the ash concentration limits that had closed the airspace."
+    private let volcanoMerged = "When the volcano erupted without warning its ash columns reached the stratosphere, grounding northern hemisphere flights for a week at a cost to airlines of billions and prompting regulators to revise ash concentration limits."
+    private let chess = "Chess engines evaluate millions of positions per second, yet grandmasters still find creative sacrifices that the engines initially misjudge in complicated middlegames."
+
+    func testRewrittenParagraphsPairByContentNotPosition() {
+        // Every paragraph is reworded and a deleted paragraph leaves a double
+        // blank line, so blank separators align one paragraph out of step.
+        let beesRewritten = "Beekeepers now lose a third of their honeybee colonies in a single winter, as parasitic mites carry viruses from hive to hive until the colonies collapse."
+        let chessRewritten = "Although chess engines search millions of positions each second, grandmasters keep finding creative sacrifices that engines misjudge in complicated middlegames."
+        let deleted = "filler filler filler paragraph about nothing in particular that the author later deleted entirely from the draft today."
+        let old = ["Intro line.", "", "", deleted, "", glaciers, "", bees, "", chess].joined(separator: "\n") + "\n"
+        let new = ["Intro line.", "", glaciersRewritten, "", beesRewritten, "", chessRewritten].joined(separator: "\n") + "\n"
+        let r = DiffEngine.compare(old, new)
+        XCTAssertEqual(rows(r, .modified).map { [$0.left!.number, $0.right!.number] }, [[6, 3], [8, 5], [10, 7]])
+        XCTAssertEqual(rows(r, .added).count, 0)
+    }
+
+    func testUnrelatedParagraphsAreNotForcedIntoAModification() {
+        let r = DiffEngine.compare(bees + "\n", chess + "\n")
+        XCTAssertEqual(rows(r, .modified).count, 0)
+        XCTAssertEqual(r.stats.removedLines, 1)
+        XCTAssertEqual(r.stats.addedLines, 1)
+        XCTAssertTrue(r.moves.isEmpty)
+        XCTAssertTrue(r.relations.isEmpty)
+    }
+
+    func testMovedAndRewrittenParagraphIsAMove() {
+        let old = [glaciers, bees, chess].joined(separator: "\n\n") + "\n"
+        let new = [bees, chess, glaciersRewritten].joined(separator: "\n\n") + "\n"
+        let r = DiffEngine.compare(old, new)
+        XCTAssertEqual(r.moves.count, 1)
+        XCTAssertEqual(r.moves.first?.from, 1...1)
+        XCTAssertEqual(r.moves.first?.to, 5...5)
+        XCTAssertLessThan(r.moves.first?.similarity ?? 1, 1)
+        XCTAssertTrue(DiffEngine.compare(old, new, options: DiffOptions(detectMoves: false)).moves.isEmpty)
+    }
+
+    func testMergedParagraphsAreRelated() {
+        let old = [bees, volcano, volcanoTail, chess].joined(separator: "\n\n") + "\n"
+        let new = [bees, volcanoMerged, chess].joined(separator: "\n\n") + "\n"
+        let r = DiffEngine.compare(old, new)
+        // One source is shown as the modification, the other as a relation.
+        let pairedLeft = rows(r, .modified).first { $0.right?.number == 3 }?.left?.number
+        XCTAssertNotNil(pairedLeft)
+        let other = pairedLeft == 3 ? 5 : 3
+        XCTAssertEqual(r.relations.map { [$0.left, $0.right] }, [[other, 3]])
+    }
+
     // MARK: Line endings
 
     func testTrailingNewlineDifferenceIsReported() {

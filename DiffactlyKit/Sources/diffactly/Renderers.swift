@@ -328,6 +328,7 @@ private struct JSONReport: Encodable {
     var removals: Int
     var hunks: [DiffHunk]
     var moves: [DiffMove]
+    var relations: [DiffRelation]
     var rows: [DiffRow]
     var insights: Insights
 
@@ -343,7 +344,7 @@ func renderJSON(_ ctx: RenderContext) -> String {
     let report = JSONReport(
         left: ctx.leftLabel, right: ctx.rightLabel, identical: r.isIdentical, options: r.options, stats: r.stats,
         additions: r.stats.additions, removals: r.stats.removals,
-        hunks: r.hunks, moves: r.moves, rows: r.rows,
+        hunks: r.hunks, moves: r.moves, relations: r.relations, rows: r.rows,
         insights: .init(
             composition: DiffInsights.composition(r),
             changeMap: DiffInsights.changeMap(r, buckets: 24),

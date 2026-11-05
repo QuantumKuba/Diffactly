@@ -132,6 +132,19 @@ public struct DiffMove: Codable, Sendable, Identifiable, Equatable {
     public var similarity: Double
 }
 
+/// A paragraph whose content went into a line shown elsewhere — the other half
+/// of a split or merge (e.g. two paragraphs rewritten into one). Unlike a move,
+/// neither line is "the same line"; they share distinctive content.
+public struct DiffRelation: Codable, Sendable, Identifiable, Equatable {
+    public var id: Int
+    /// Line number on the left side.
+    public var left: Int
+    /// Line number on the right side.
+    public var right: Int
+    /// Content-word similarity, 0…1.
+    public var similarity: Double
+}
+
 public struct DiffStats: Codable, Sendable, Equatable {
     public var unchangedLines = 0
     public var modifiedLines = 0
@@ -161,6 +174,8 @@ public struct DiffResult: Codable, Sendable, Equatable {
     public var rows: [DiffRow]
     public var hunks: [DiffHunk]
     public var moves: [DiffMove]
+    /// Split/merge links between paragraphs (see `DiffRelation`).
+    public var relations: [DiffRelation]
     public var stats: DiffStats
     public var options: DiffOptions
     public var leftHasTrailingNewline: Bool
@@ -170,7 +185,7 @@ public struct DiffResult: Codable, Sendable, Equatable {
     public var isIdentical: Bool { hunks.isEmpty }
 
     public static let empty = DiffResult(
-        rows: [], hunks: [], moves: [], stats: DiffStats(), options: DiffOptions(),
+        rows: [], hunks: [], moves: [], relations: [], stats: DiffStats(), options: DiffOptions(),
         leftHasTrailingNewline: false, rightHasTrailingNewline: false
     )
 

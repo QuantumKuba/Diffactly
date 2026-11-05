@@ -90,7 +90,8 @@ struct DiffOutputView: View {
                         switch item.content {
                         case .split(let left, let right):
                             SplitRowView(document: document, left: left, right: right, gutter: model.gutterWidth,
-                                         dark: colorScheme == .dark, isCurrent: model.isCurrent(item, document: document))
+                                         dark: colorScheme == .dark, isCurrent: model.isCurrent(item, document: document),
+                                         linked: model.linkedEnds)
                         case .unified(let line):
                             UnifiedRowView(document: document, line: line, gutter: model.gutterWidth,
                                            dark: colorScheme == .dark, isCurrent: model.isCurrent(item, document: document))
@@ -100,6 +101,14 @@ struct DiffOutputView: View {
                     }
                 }
                 .padding(.bottom, 24)
+            }
+            .overlayPreferenceValue(LinkAnchorKey.self) { anchors in
+                if layout == .split, !model.links.isEmpty {
+                    GeometryReader { proxy in
+                        LinkRibbons(model: model, frames: anchors.mapValues { proxy[$0] }, size: proxy.size, dark: colorScheme == .dark)
+                    }
+                    .allowsHitTesting(false)
+                }
             }
             .onChange(of: document.focusRequest) { _, request in
                 guard let request, let target = model.itemID(forRow: request.rowID) else { return }
@@ -123,9 +132,24 @@ struct OutputModel {
         let rowIDs: [Int]
     }
 
+    /// A band in the split view's centre lane: a move or a split/merge relation.
+    struct Link: Identifiable {
+        let id: String
+        let isMove: Bool
+        let left: ClosedRange<Int>
+        let right: ClosedRange<Int>
+    }
+
+    static let laneWidth: CGFloat = 44
+
     private(set) var items: [Item] = []
     private var rowToItem: [Int: String] = [:]
     let gutterWidth: CGFloat
+    private(set) var links: [Link] = []
+    /// Every line that is one end of a link.
+    private(set) var linkedEnds: Set<LinkEnd> = []
+    /// Row of each linked line, to tell whether an off-screen end lies above or below.
+    private(set) var rowOfEnd: [LinkEnd: Int] = [:]
 
     init(result: DiffResult, layout: DiffDocument.Mode, collapse: Bool, expanded: Set<Int>, context: Int) {
         let maxLine = max(result.stats.leftLineCount, result.stats.rightLineCount, 1)
@@ -174,6 +198,19 @@ struct OutputModel {
         }
         for item in items {
             for row in item.rowIDs where rowToItem[row] == nil { rowToItem[row] = item.id }
+        }
+
+        if layout == .split {
+            links = result.moves.map { Link(id: "m\($0.id)", isMove: true, left: $0.from, right: $0.to) }
+                + result.relations.map { Link(id: "r\($0.id)", isMove: false, left: $0.left...$0.left, right: $0.right...$0.right) }
+            for link in links {
+                for n in link.left { linkedEnds.insert(LinkEnd(side: .left, line: n)) }
+                for n in link.right { linkedEnds.insert(LinkEnd(side: .right, line: n)) }
+            }
+            for row in result.rows {
+                if let n = row.left?.number, linkedEnds.contains(LinkEnd(side: .left, line: n)) { rowOfEnd[LinkEnd(side: .left, line: n)] = row.id }
+                if let n = row.right?.number, linkedEnds.contains(LinkEnd(side: .right, line: n)) { rowOfEnd[LinkEnd(side: .right, line: n)] = row.id }
+            }
         }
     }
 
@@ -269,11 +306,22 @@ private struct SplitRowView: View {
     let gutter: CGFloat
     let dark: Bool
     let isCurrent: Bool
+    var linked: Set<LinkEnd> = []
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             cell(left, side: .left)
-            Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1)
+            if linked.isEmpty {
+                Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1)
+            } else {
+                // Room for the move / relation bands drawn over the list.
+                HStack(spacing: 0) {
+                    Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1)
+                    Color.secondary.opacity(dark ? 0.05 : 0.03)
+                    Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1)
+                }
+                .frame(width: OutputModel.laneWidth)
+            }
             cell(right, side: .right)
         }
         .overlay(alignment: .leading) {
@@ -296,6 +344,7 @@ private struct SplitRowView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let row, moved { MoveBadge(document: document, row: row, side: side).padding(.horizontal, 6) }
+                RelationBadge(document: document, number: line.number, side: side).padding(.trailing, 6)
             } else {
                 Color.clear.frame(maxWidth: .infinity, minHeight: 16)
             }
@@ -303,6 +352,10 @@ private struct SplitRowView: View {
         .padding(.vertical, 1.5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(background(row, line: line, side: side))
+        .modifier(LinkAnchor(end: line.flatMap { l in
+            let end = LinkEnd(side: side, line: l.number)
+            return linked.contains(end) ? end : nil
+        }))
     }
 
     private func background(_ row: DiffRow?, line: DiffLine?, side: DiffDocument.Side) -> Color {
@@ -340,6 +393,9 @@ private struct UnifiedRowView: View {
             if let row, moved {
                 MoveBadge(document: document, row: row, side: side).padding(.horizontal, 6)
             }
+            if line.kind != .context, let n = side == .left ? line.leftNumber : line.rightNumber {
+                RelationBadge(document: document, number: n, side: side).padding(.trailing, 6)
+            }
             if !document.wrapLines { Spacer(minLength: 0) }
         }
         .padding(.vertical, 1.5)
@@ -347,6 +403,116 @@ private struct UnifiedRowView: View {
         .background(line.kind == .context ? Color.clear : DiffPalette.rowTint(.modified, side: side, moved: moved, dark: dark))
         .overlay(alignment: .leading) {
             if isCurrent { Rectangle().fill(Color.accentColor).frame(width: 3) }
+        }
+    }
+}
+
+// MARK: - Link lane
+
+/// One end of a link: a line on one side.
+struct LinkEnd: Hashable {
+    let side: DiffDocument.Side
+    let line: Int
+}
+
+struct LinkAnchorKey: PreferenceKey {
+    static var defaultValue: [LinkEnd: Anchor<CGRect>] = [:]
+    static func reduce(value: inout [LinkEnd: Anchor<CGRect>], nextValue: () -> [LinkEnd: Anchor<CGRect>]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+/// Reports a cell's bounds when its line is one end of a link.
+private struct LinkAnchor: ViewModifier {
+    let end: LinkEnd?
+    func body(content: Content) -> some View {
+        if let end {
+            content.anchorPreference(key: LinkAnchorKey.self, value: .bounds) { [end: $0] }
+        } else {
+            content
+        }
+    }
+}
+
+/// Bands across the centre lane joining a block to where it went: solid purple
+/// for moves, dashed teal for split/merge relations. Only rows the lazy list has
+/// laid out report frames, so an end that is scrolled away is drawn off the top
+/// or bottom edge — the band still points the way.
+private struct LinkRibbons: View {
+    let model: OutputModel
+    let frames: [LinkEnd: CGRect]
+    let size: CGSize
+    let dark: Bool
+
+    var body: some View {
+        Canvas { context, _ in
+            let lane = OutputModel.laneWidth
+            let x0 = (size.width - lane) / 2, x1 = x0 + lane
+            let visibleRows = frames.keys.compactMap { model.rowOfEnd[$0] }
+            guard let firstRow = visibleRows.min(), let lastRow = visibleRows.max() else { return }
+
+            /// Vertical extent of one side of a link, on screen or just off it.
+            func span(_ side: DiffDocument.Side, _ lines: ClosedRange<Int>) -> (CGFloat, CGFloat)? {
+                let rects = lines.compactMap { frames[LinkEnd(side: side, line: $0)] }
+                if !rects.isEmpty {
+                    return (rects.map(\.minY).min()!, rects.map(\.maxY).max()!)
+                }
+                guard let row = model.rowOfEnd[LinkEnd(side: side, line: lines.lowerBound)] else { return nil }
+                if row < firstRow { return (-60, -40) }
+                if row > lastRow { return (size.height + 40, size.height + 60) }
+                return nil   // inside a folded region
+            }
+
+            for link in model.links {
+                guard let (l0, l1) = span(.left, link.left), let (r0, r1) = span(.right, link.right) else { continue }
+                if max(l1, r1) < 0 || min(l0, r0) > size.height { continue }
+                let mid = (x0 + x1) / 2
+                var top = Path(), bottom = Path()
+                top.move(to: CGPoint(x: x0, y: l0))
+                top.addCurve(to: CGPoint(x: x1, y: r0), control1: CGPoint(x: mid, y: l0), control2: CGPoint(x: mid, y: r0))
+                bottom.move(to: CGPoint(x: x1, y: r1))
+                bottom.addCurve(to: CGPoint(x: x0, y: l1), control1: CGPoint(x: mid, y: r1), control2: CGPoint(x: mid, y: l1))
+                var band = top
+                band.addLine(to: CGPoint(x: x1, y: r1))
+                band.addPath(bottom)
+                band.closeSubpath()
+
+                let color = link.isMove ? DiffPalette.moved : DiffPalette.related
+                context.fill(band, with: .color(color.opacity(dark ? 0.42 : 0.28)))
+                let style = link.isMove ? StrokeStyle(lineWidth: 1) : StrokeStyle(lineWidth: 1, dash: [3, 2])
+                context.stroke(top, with: .color(color.opacity(0.8)), style: style)
+                context.stroke(bottom, with: .color(color.opacity(0.8)), style: style)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
+    }
+}
+
+/// "↔ 13" on a paragraph that shares content with a line shown elsewhere
+/// (the other half of a split or merge). Click to jump there.
+private struct RelationBadge: View {
+    @ObservedObject var document: DiffDocument
+    let number: Int
+    let side: DiffDocument.Side
+
+    var body: some View {
+        let relations = document.result.relations.filter { (side == .left ? $0.left : $0.right) == number }
+        ForEach(relations) { relation in
+            let target = side == .left ? relation.right : relation.left
+            Button {
+                document.focus(lines: target...target, side: side == .left ? .right : .left)
+            } label: {
+                Label("\(side == .left ? "also in" : "also from") \(target)", systemImage: side == .left ? "arrow.triangle.branch" : "arrow.triangle.merge")
+                    .font(.caption2.weight(.medium))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(DiffPalette.related.opacity(0.18)))
+                    .foregroundStyle(DiffPalette.related)
+                    .fixedSize()
+            }
+            .buttonStyle(.plain)
+            .help("Shares content with \(side == .left ? "changed" : "original") line \(target) (\(Int(relation.similarity * 100))% similar), part of a split or merge. Click to jump there.")
         }
     }
 }
