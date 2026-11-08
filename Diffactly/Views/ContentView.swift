@@ -61,7 +61,7 @@ struct EditorPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(side.title).font(.subheadline.weight(.semibold))
+                EditableSplitTitle(document: document, side: side)
                 if let name = side == .left ? document.leftName : document.rightName {
                     Label(name, systemImage: "doc.text")
                         .font(.subheadline)
@@ -77,9 +77,9 @@ struct EditorPane: View {
                     Image(systemName: "folder")
                 }
                 .buttonStyle(.borderless)
-                .help("Open a file as the \(side.title.lowercased()) text")
+                .help("Open a file as the \(document.title(for: side).lowercased()) text")
                 Menu {
-                    Button("Open File…") { document.showOpenPanel(for: side) }
+                    Button("Open \(document.title(for: side))…") { document.showOpenPanel(for: side) }
                     Button("Paste") {
                         if let s = NSPasteboard.general.string(forType: .string) { document.setText(s, for: side) }
                     }
@@ -99,7 +99,7 @@ struct EditorPane: View {
             CodeEditor(
                 text: side == .left ? $document.leftText : $document.rightText,
                 highlights: side == .left ? document.leftHighlights : document.rightHighlights,
-                placeholder: side == .left ? "Paste or drop the original text…" : "Paste or drop the changed text…",
+                placeholder: "Paste or drop the \(document.title(for: side).lowercased()) text…",
                 wrapLines: document.wrapLines,
                 focusRequest: document.focusRequest,
                 focusLines: side == .left ? document.focusRequest?.leftLines : document.focusRequest?.rightLines,
@@ -182,13 +182,14 @@ struct StatusBar: View {
     /// "12 words, 68 chars selected" – only shown while text is selected in an editor.
     private func selectionLabel(_ selection: DiffDocument.SelectionCounts, _ detail: Detail) -> some View {
         let c = selection.counts
+        let title = document.title(for: selection.side)
         let text = detail == .full
             ? "\(Self.plural(c.words, "word")), \(Self.plural(c.characters, "char")) selected"
             : "\(Self.plural(c.words, "word")) selected"
         return Text(text)
             .foregroundStyle(Color.accentColor)
             .monospacedDigit()
-            .help("Selected in \(selection.side.title.lowercased()) text: \(Self.plural(c.words, "word")), \(Self.plural(c.characters, "character")), \(Self.plural(c.lines, "line"))")
+            .help("Selected in \(title.lowercased()) text: \(Self.plural(c.words, "word")), \(Self.plural(c.characters, "character")), \(Self.plural(c.lines, "line"))")
     }
 
     /// Total words per side with the net change, e.g. "Original 120 · Changed 134 words (+14)".
@@ -196,12 +197,14 @@ struct StatusBar: View {
     private func wordTotals(_ detail: Detail) -> some View {
         let left = document.leftCounts, right = document.rightCounts
         let delta = right.words - left.words
+        let leftTitle = document.title(for: .left)
+        let rightTitle = document.title(for: .right)
         HStack(spacing: 4) {
             if detail == .full {
-                Text("Original").foregroundStyle(.secondary)
+                Text(leftTitle).foregroundStyle(.secondary)
                 Text(left.words.formatted()).monospacedDigit()
                 Text("·").foregroundStyle(.tertiary)
-                Text("Changed").foregroundStyle(.secondary)
+                Text(rightTitle).foregroundStyle(.secondary)
                 Text(right.words.formatted()).monospacedDigit()
                 Text("words").foregroundStyle(.secondary)
             } else {
@@ -215,8 +218,8 @@ struct StatusBar: View {
             }
         }
         .help("""
-            Original: \(Self.plural(left.words, "word")), \(Self.plural(left.characters, "character")), \(Self.plural(left.lines, "line"))
-            Changed: \(Self.plural(right.words, "word")), \(Self.plural(right.characters, "character")), \(Self.plural(right.lines, "line"))
+            \(leftTitle): \(Self.plural(left.words, "word")), \(Self.plural(left.characters, "character")), \(Self.plural(left.lines, "line"))
+            \(rightTitle): \(Self.plural(right.words, "word")), \(Self.plural(right.characters, "character")), \(Self.plural(right.lines, "line"))
             """)
     }
 

@@ -22,7 +22,8 @@ final class DiffDocument: ObservableObject {
 
     enum Side: Hashable {
         case left, right
-        var title: String { self == .left ? "Original" : "Changed" }
+        var defaultTitle: String { self == .left ? "Original" : "Changed" }
+        var title: String { defaultTitle }
     }
 
     /// Asks the editors (or the output view) to bring a change into view.
@@ -46,6 +47,8 @@ final class DiffDocument: ObservableObject {
     @Published var rightText: String { didSet { if rightText != oldValue { rightCounts = TextCounts(rightText); scheduleDiff() } } }
     @Published var leftName: String?
     @Published var rightName: String?
+    @Published var leftTitle: String = "Original"
+    @Published var rightTitle: String = "Changed"
 
     // MARK: Settings (persisted)
 
@@ -96,7 +99,16 @@ final class DiffDocument: ObservableObject {
         static let insights = "showInsights"
     }
 
-    init(left: String = "This is some text on the left side", right: String = "This is some new text on the right side") {
+    init(
+        left: String = "This is some text on the left side",
+        right: String = "This is some new text on the right side",
+        leftTitle: String = "Original",
+        rightTitle: String = "Changed"
+    ) {
+        let trimmedLeftTitle = leftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRightTitle = rightTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.leftTitle = trimmedLeftTitle.isEmpty ? "Original" : trimmedLeftTitle
+        self.rightTitle = trimmedRightTitle.isEmpty ? "Changed" : trimmedRightTitle
         leftText = left
         rightText = right
         leftCounts = TextCounts(left)
@@ -197,8 +209,10 @@ final class DiffDocument: ObservableObject {
     func swapSides() {
         let (l, r) = (leftText, rightText)
         let (ln, rn) = (leftName, rightName)
+        let (lt, rt) = (leftTitle, rightTitle)
         leftText = r; rightText = l
         leftName = rn; rightName = ln
+        leftTitle = rt; rightTitle = lt
     }
 
     func clear(_ side: Side) {
@@ -214,6 +228,22 @@ final class DiffDocument: ObservableObject {
 
     func setText(_ text: String, for side: Side) {
         if side == .left { leftText = text } else { rightText = text }
+    }
+
+    func title(for side: Side) -> String {
+        let raw = side == .left ? leftTitle : rightTitle
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? side.defaultTitle : trimmed
+    }
+
+    func setTitle(_ title: String, for side: Side) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = trimmed.isEmpty ? side.defaultTitle : trimmed
+        if side == .left {
+            leftTitle = resolved
+        } else {
+            rightTitle = resolved
+        }
     }
 
     // MARK: Files
@@ -255,8 +285,9 @@ final class DiffDocument: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.message = "Choose the \(side.title.lowercased()) file"
-        panel.prompt = "Open \(side.title)"
+        let label = title(for: side)
+        panel.message = "Choose the \(label.lowercased()) file"
+        panel.prompt = "Open \(label)"
         if panel.runModal() == .OK, let url = panel.url { open(url, into: side) }
     }
 
@@ -277,7 +308,11 @@ final class DiffDocument: ObservableObject {
     // MARK: Export
 
     var unifiedPatch: String {
-        UnifiedFormatter.patch(result, leftLabel: leftName.map { "a/\($0)" } ?? "original", rightLabel: rightName.map { "b/\($0)" } ?? "changed")
+        UnifiedFormatter.patch(
+            result,
+            leftLabel: leftName.map { "a/\($0)" } ?? title(for: .left).lowercased(),
+            rightLabel: rightName.map { "b/\($0)" } ?? title(for: .right).lowercased()
+        )
     }
 }
 

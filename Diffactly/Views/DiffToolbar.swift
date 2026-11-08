@@ -97,10 +97,10 @@ struct DiffCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Divider()
-            Button("Open Original…") { document?.showOpenPanel(for: .left) }
+            Button("Open \(document?.title(for: .left) ?? "Original")…") { document?.showOpenPanel(for: .left) }
                 .keyboardShortcut("o")
                 .disabled(document == nil)
-            Button("Open Changed…") { document?.showOpenPanel(for: .right) }
+            Button("Open \(document?.title(for: .right) ?? "Changed")…") { document?.showOpenPanel(for: .right) }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
                 .disabled(document == nil)
         }

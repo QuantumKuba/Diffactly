@@ -140,4 +140,68 @@ final class DiffDocumentTests: XCTestCase {
         XCTAssertNil(document.selection)
         document.mode = .edit   // restore the persisted default for other tests
     }
+
+    // MARK: - Side titles
+
+    func testDefaultSideTitlesAreOriginalAndChanged() {
+        let document = DiffDocument(left: "a", right: "b")
+        XCTAssertEqual(document.title(for: .left), "Original")
+        XCTAssertEqual(document.title(for: .right), "Changed")
+        XCTAssertEqual(document.leftTitle, "Original")
+        XCTAssertEqual(document.rightTitle, "Changed")
+    }
+
+    func testSettingSideTitleUpdatesTitleForSide() {
+        let document = DiffDocument(left: "a", right: "b")
+        document.setTitle("Before", for: .left)
+        document.setTitle("After", for: .right)
+        XCTAssertEqual(document.title(for: .left), "Before")
+        XCTAssertEqual(document.title(for: .right), "After")
+        XCTAssertEqual(document.leftTitle, "Before")
+        XCTAssertEqual(document.rightTitle, "After")
+    }
+
+    func testBlankOrWhitespaceTitleRevertsToDefault() {
+        let document = DiffDocument(left: "a", right: "b")
+        document.setTitle("Production", for: .left)
+        document.setTitle("Staging", for: .right)
+        XCTAssertEqual(document.title(for: .left), "Production")
+        XCTAssertEqual(document.title(for: .right), "Staging")
+
+        document.setTitle("", for: .left)
+        XCTAssertEqual(document.title(for: .left), "Original")
+
+        document.setTitle("   \n\t  ", for: .right)
+        XCTAssertEqual(document.title(for: .right), "Changed")
+
+        // Also verify directly setting leftTitle/rightTitle to whitespace falls back
+        document.leftTitle = "   "
+        XCTAssertEqual(document.title(for: .left), "Original")
+        document.rightTitle = ""
+        XCTAssertEqual(document.title(for: .right), "Changed")
+    }
+
+    func testSwapSidesSwapsTitles() {
+        let document = DiffDocument(left: "one", right: "two")
+        document.setTitle("Base", for: .left)
+        document.setTitle("Head", for: .right)
+        XCTAssertEqual(document.title(for: .left), "Base")
+        XCTAssertEqual(document.title(for: .right), "Head")
+
+        document.swapSides()
+        XCTAssertEqual(document.title(for: .left), "Head")
+        XCTAssertEqual(document.title(for: .right), "Base")
+        XCTAssertEqual(document.leftTitle, "Head")
+        XCTAssertEqual(document.rightTitle, "Base")
+        XCTAssertEqual(document.leftText, "two")
+        XCTAssertEqual(document.rightText, "one")
+    }
+
+    func testCustomTitlesReflectedInUnifiedPatchWhenFilenamesAbsent() async {
+        let document = DiffDocument(left: "old\n", right: "new\n")
+        document.setTitle("Base", for: .left)
+        document.setTitle("Head", for: .right)
+        await waitForDiff(document)
+        XCTAssertTrue(document.unifiedPatch.hasPrefix("--- base\n+++ head\n"))
+    }
 }

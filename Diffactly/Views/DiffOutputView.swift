@@ -63,7 +63,7 @@ struct DiffOutputView: View {
 
     private func fileLabel(_ side: DiffDocument.Side) -> some View {
         HStack(spacing: 6) {
-            Text(side.title).font(.subheadline.weight(.semibold))
+            EditableSplitTitle(document: document, side: side)
             if let name = side == .left ? document.leftName : document.rightName {
                 Text(name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
