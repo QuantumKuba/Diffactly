@@ -59,6 +59,17 @@ struct DiffToolbar: ToolbarContent {
             }
             .disabled(!document.hasChanges)
 
+            Button {
+                if document.search.isPresented {
+                    document.closeSearch()
+                } else {
+                    document.openSearch()
+                }
+            } label: {
+                Label("Find", systemImage: document.search.isPresented ? "magnifyingglass.circle.fill" : "magnifyingglass")
+            }
+            .help("Find text (⌘F)")
+
             Toggle(isOn: $document.showInsights) {
                 Label("Insights", systemImage: "chart.bar.xaxis")
             }
@@ -114,6 +125,32 @@ struct DiffCommands: Commands {
             }
             .keyboardShortcut("c", modifiers: [.command, .option])
             .disabled(document?.hasChanges != true)
+        }
+
+        CommandMenu("Find") {
+            Button("Find…") {
+                document?.openSearch()
+            }
+            .keyboardShortcut("f")
+            .disabled(document == nil)
+
+            Button("Find Next") {
+                document?.findNext()
+            }
+            .keyboardShortcut("g")
+            .disabled(document == nil || document?.search.matches.isEmpty != false)
+
+            Button("Find Previous") {
+                document?.findPrevious()
+            }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+            .disabled(document == nil || document?.search.matches.isEmpty != false)
+
+            Button("Use Selection for Find") {
+                document?.useSelectionForSearch()
+            }
+            .keyboardShortcut("e")
+            .disabled(document == nil)
         }
 
         CommandMenu("Compare") {

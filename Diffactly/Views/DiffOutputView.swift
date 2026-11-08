@@ -59,6 +59,8 @@ struct DiffOutputView: View {
         }
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { document.activeSide = side }
     }
 
     private func fileLabel(_ side: DiffDocument.Side) -> some View {
@@ -114,6 +116,20 @@ struct DiffOutputView: View {
                 guard let request, let target = model.itemID(forRow: request.rowID) else { return }
                 withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .center) }
             }
+            .onChange(of: document.search.scrollToMatchID) { _, _ in
+                guard let match = document.search.currentMatch,
+                      let rowID = match.rowID else { return }
+                if let target = model.itemID(forRow: rowID) {
+                    withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .center) }
+                } else if let foldID = model.foldID(containingRow: rowID) {
+                    document.expandedFolds.insert(foldID)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        if let target = model.itemID(forRow: rowID) {
+                            withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .center) }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -144,6 +160,7 @@ struct OutputModel {
 
     private(set) var items: [Item] = []
     private var rowToItem: [Int: String] = [:]
+    private var rowToFoldID: [Int: Int] = [:]
     let gutterWidth: CGFloat
     private(set) var links: [Link] = []
     /// Every line that is one end of a link.
@@ -190,6 +207,9 @@ struct OutputModel {
                 if expanded.contains(start) {
                     items.append(contentsOf: raw[start..<i])
                 } else {
+                    for k in start..<i {
+                        for rID in raw[k].rowIDs { rowToFoldID[rID] = start }
+                    }
                     items.append(Item(id: "f\(start)", content: .fold(id: start, count: i - start), rowIDs: []))
                 }
             }
@@ -215,6 +235,7 @@ struct OutputModel {
     }
 
     func itemID(forRow row: Int) -> String? { rowToItem[row] }
+    func foldID(containingRow row: Int) -> Int? { rowToFoldID[row] }
 
     @MainActor
     func isCurrent(_ item: Item, document: DiffDocument) -> Bool {
@@ -251,7 +272,12 @@ struct OutputModel {
 
 private let codeFont = Font.system(size: 12.5, design: .monospaced)
 
-private func attributed(_ segments: [DiffSegment], emphasis: Color?) -> AttributedString {
+private func attributed(
+    _ segments: [DiffSegment],
+    emphasis: Color?,
+    matches: [SearchMatch] = [],
+    currentMatchID: UUID? = nil
+) -> AttributedString {
     var out = AttributedString()
     for seg in segments {
         var piece = AttributedString(seg.text.isEmpty ? "" : seg.text)
@@ -259,6 +285,18 @@ private func attributed(_ segments: [DiffSegment], emphasis: Color?) -> Attribut
         out += piece
     }
     if out.characters.isEmpty { out = AttributedString(" ") }
+
+    guard !matches.isEmpty else { return out }
+
+    for match in matches {
+        let isCurrent = (match.id == currentMatchID)
+        if let r = Range(match.lineRange, in: out) {
+            out[r].backgroundColor = isCurrent ? Color.orange : Color.yellow.opacity(0.4)
+            if isCurrent {
+                out[r].foregroundColor = Color.white
+            }
+        }
+    }
     return out
 }
 
@@ -334,10 +372,19 @@ private struct SplitRowView: View {
         let line = side == .left ? row?.left : row?.right
         let moved = row?.moveID != nil
         let showEmphasis = row?.kind == .modified || moved
+        let matches = (document.search.isPresented && line != nil)
+            ? document.search.matches(for: side, line: line!.number)
+            : []
+        let currentMatchID = document.search.currentMatch?.id
         HStack(alignment: .top, spacing: 0) {
             LineNumber(number: line?.number, width: gutter)
             if let line {
-                Text(attributed(line.segments, emphasis: showEmphasis ? DiffPalette.emphasis(side: side, moved: moved, dark: dark) : nil))
+                Text(attributed(
+                    line.segments,
+                    emphasis: showEmphasis ? DiffPalette.emphasis(side: side, moved: moved, dark: dark) : nil,
+                    matches: matches,
+                    currentMatchID: currentMatchID
+                ))
                     .font(codeFont)
                     .lineLimit(document.wrapLines ? nil : 1)
                     .truncationMode(.tail)
@@ -352,6 +399,10 @@ private struct SplitRowView: View {
         .padding(.vertical, 1.5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(background(row, line: line, side: side))
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded {
+            document.activeSide = side
+        })
         .modifier(LinkAnchor(end: line.flatMap { l in
             let end = LinkEnd(side: side, line: l.number)
             return linked.contains(end) ? end : nil
@@ -377,6 +428,11 @@ private struct UnifiedRowView: View {
         let moved = line.moveID != nil
         let row = document.result.rows.indices.contains(line.rowID) ? document.result.rows[line.rowID] : nil
         let emphasis = (row?.kind == .modified || moved) && line.kind != .context
+        let lineNum = side == .left ? line.leftNumber : line.rightNumber
+        let matches = (document.search.isPresented && lineNum != nil)
+            ? document.search.matches(for: side, line: lineNum!)
+            : []
+        let currentMatchID = document.search.currentMatch?.id
         HStack(alignment: .top, spacing: 0) {
             LineNumber(number: line.leftNumber, width: gutter)
             LineNumber(number: line.rightNumber, width: gutter)
@@ -384,7 +440,12 @@ private struct UnifiedRowView: View {
                 .font(codeFont)
                 .foregroundStyle(line.kind == .removed ? DiffPalette.removed : (line.kind == .added ? DiffPalette.added : .secondary))
                 .frame(width: 14)
-            Text(attributed(line.segments, emphasis: emphasis ? DiffPalette.emphasis(side: side, moved: moved, dark: dark) : nil))
+            Text(attributed(
+                line.segments,
+                emphasis: emphasis ? DiffPalette.emphasis(side: side, moved: moved, dark: dark) : nil,
+                matches: matches,
+                currentMatchID: currentMatchID
+            ))
                 .font(codeFont)
                 .lineLimit(document.wrapLines ? nil : 1)
                 .fixedSize(horizontal: !document.wrapLines, vertical: false)

@@ -21,6 +21,19 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) {
+                if document.search.isPresented {
+                    SearchBarView(document: document)
+                        .padding(.top, 8)
+                        .padding(.trailing, 16)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .top)),
+                            removal: .opacity.combined(with: .move(edge: .top))
+                        ))
+                        .zIndex(100)
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: document.search.isPresented)
             Divider()
             StatusBar(document: document)
         }
@@ -95,6 +108,8 @@ struct EditorPane: View {
             .padding(.horizontal, 12)
             .frame(height: 30)
             .background(.bar)
+            .contentShape(Rectangle())
+            .onTapGesture { document.activeSide = side }
             Divider()
             CodeEditor(
                 text: side == .left ? $document.leftText : $document.rightText,
@@ -103,8 +118,17 @@ struct EditorPane: View {
                 wrapLines: document.wrapLines,
                 focusRequest: document.focusRequest,
                 focusLines: side == .left ? document.focusRequest?.leftLines : document.focusRequest?.rightLines,
+                side: side,
+                searchMatches: document.search.matches.filter { $0.side == side },
+                currentMatch: document.search.currentMatch,
+                isSearchPresented: document.search.isPresented,
                 onFileDrop: { url in document.open(url, into: side) },
-                onSelectionChange: { selected in document.updateSelection(side: side, selectedText: selected) }
+                onSelectionChange: { selected in document.updateSelection(side: side, selectedText: selected) },
+                onFocus: { document.activeSide = side },
+                onFind: { document.openSearch(focusedSide: side) },
+                onFindNext: { document.findNext() },
+                onFindPrevious: { document.findPrevious() },
+                onUseSelection: { document.useSelectionForSearch() }
             )
         }
     }

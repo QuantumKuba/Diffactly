@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import DiffactlyCore
+import Combine
 
 /// State of one Diffactly window: the two texts, the comparison settings and the
 /// latest result. Diffs run off the main thread and are debounced while typing.
@@ -39,12 +40,13 @@ final class DiffDocument: ObservableObject {
     struct SelectionCounts: Equatable {
         var side: Side
         var counts: TextCounts
+        var text: String = ""
     }
 
     // MARK: Inputs
 
-    @Published var leftText: String { didSet { if leftText != oldValue { leftCounts = TextCounts(leftText); scheduleDiff() } } }
-    @Published var rightText: String { didSet { if rightText != oldValue { rightCounts = TextCounts(rightText); scheduleDiff() } } }
+    @Published var leftText: String { didSet { if leftText != oldValue { leftCounts = TextCounts(leftText); scheduleDiff(); search.performSearch() } } }
+    @Published var rightText: String { didSet { if rightText != oldValue { rightCounts = TextCounts(rightText); scheduleDiff(); search.performSearch() } } }
     @Published var leftName: String?
     @Published var rightName: String?
     @Published var leftTitle: String = "Original"
@@ -86,9 +88,11 @@ final class DiffDocument: ObservableObject {
     @Published var focusRequest: FocusRequest?
     @Published var expandedFolds: Set<Int> = []
     @Published var errorMessage: String?
+    @Published var search = SearchModel()
 
     private var diffTask: Task<Void, Never>?
     private var generation = 0
+    private var searchCancellable: AnyCancellable?
     private let defaults = UserDefaults.standard
 
     private enum Keys {
@@ -118,6 +122,10 @@ final class DiffDocument: ObservableObject {
         collapseUnchanged = UserDefaults.standard.object(forKey: Keys.collapse) as? Bool ?? false
         wrapLines = UserDefaults.standard.object(forKey: Keys.wrap) as? Bool ?? true
         showInsights = UserDefaults.standard.bool(forKey: Keys.insights)
+        search.document = self
+        searchCancellable = search.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         scheduleDiff(immediately: true)
     }
 
@@ -156,6 +164,7 @@ final class DiffDocument: ObservableObject {
             self.wordShifts = computed.1
             self.leftHighlights = computed.2
             self.rightHighlights = computed.3
+            self.search.updateRowIDs(with: computed.0)
             self.isComputing = false
             if let current = self.currentHunk, current >= computed.0.hunks.count { self.currentHunk = nil }
         }
@@ -213,6 +222,11 @@ final class DiffDocument: ObservableObject {
         leftText = r; rightText = l
         leftName = rn; rightName = ln
         leftTitle = rt; rightTitle = lt
+        if search.scope == .left {
+            search.scope = .right
+        } else if search.scope == .right {
+            search.scope = .left
+        }
     }
 
     func clear(_ side: Side) {
@@ -276,10 +290,24 @@ final class DiffDocument: ObservableObject {
         if selectedText.isEmpty {
             if selection?.side == side { selection = nil }
         } else {
-            let next = SelectionCounts(side: side, counts: TextCounts(selectedText))
+            let next = SelectionCounts(side: side, counts: TextCounts(selectedText), text: selectedText)
             if selection != next { selection = next }
         }
+        activeSide = side
     }
+
+    // MARK: - Search helpers
+
+    var activeSide: Side? {
+        get { search.activeSide }
+        set { search.activeSide = newValue }
+    }
+
+    func openSearch(focusedSide: Side? = nil) { search.openSearch(focusedSide: focusedSide) }
+    func closeSearch() { search.closeSearch() }
+    func findNext() { search.findNext() }
+    func findPrevious() { search.findPrevious() }
+    func useSelectionForSearch() { search.useSelectionForSearch() }
 
     func showOpenPanel(for side: Side) {
         let panel = NSOpenPanel()

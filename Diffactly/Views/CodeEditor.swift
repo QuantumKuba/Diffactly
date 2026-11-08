@@ -10,9 +10,18 @@ struct CodeEditor: NSViewRepresentable {
     var wrapLines: Bool
     var focusRequest: DiffDocument.FocusRequest?
     var focusLines: ClosedRange<Int>?
+    var side: DiffDocument.Side = .left
+    var searchMatches: [SearchMatch] = []
+    var currentMatch: SearchMatch? = nil
+    var isSearchPresented: Bool = false
     var onFileDrop: (URL) -> Void
     /// Receives the selected text (empty when the caret is just a caret).
     var onSelectionChange: (String) -> Void = { _ in }
+    var onFocus: (() -> Void)? = nil
+    var onFind: (() -> Void)? = nil
+    var onFindNext: (() -> Void)? = nil
+    var onFindPrevious: (() -> Void)? = nil
+    var onUseSelection: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -28,11 +37,16 @@ struct CodeEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.placeholder = placeholder
         textView.onFileDrop = onFileDrop
+        textView.onFocus = onFocus
+        textView.onFind = onFind
+        textView.onFindNext = onFindNext
+        textView.onFindPrevious = onFindPrevious
+        textView.onUseSelection = onUseSelection
         textView.allowsUndo = true
         textView.isRichText = false
         textView.importsGraphics = false
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
+        textView.usesFindBar = false
+        textView.isIncrementalSearchingEnabled = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -66,7 +80,12 @@ struct CodeEditor: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.ruler = ruler
         applyWrapping(textView, scrollView)
-        textView.apply(highlights)
+        textView.apply(
+            highlights: highlights,
+            searchMatches: searchMatches,
+            currentMatchID: currentMatch?.id,
+            isSearchPresented: isSearchPresented
+        )
         ruler.marks = highlights
         return scrollView
     }
@@ -76,6 +95,11 @@ struct CodeEditor: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         textView.onFileDrop = onFileDrop
         textView.placeholder = placeholder
+        textView.onFocus = onFocus
+        textView.onFind = onFind
+        textView.onFindNext = onFindNext
+        textView.onFindPrevious = onFindPrevious
+        textView.onUseSelection = onUseSelection
 
         if textView.string != text {
             // External change (file opened, swap, transform): replace undoably.
@@ -90,14 +114,34 @@ struct CodeEditor: NSViewRepresentable {
             context.coordinator.wrapLines = wrapLines
             applyWrapping(textView, scrollView)
         }
-        if textView.highlights != highlights {
-            textView.apply(highlights)
+
+        let searchChanged = textView.searchMatches != searchMatches
+            || textView.currentMatchID != currentMatch?.id
+            || textView.isSearchPresented != isSearchPresented
+
+        if textView.highlights != highlights || searchChanged {
+            textView.apply(
+                highlights: highlights,
+                searchMatches: searchMatches,
+                currentMatchID: currentMatch?.id,
+                isSearchPresented: isSearchPresented
+            )
             context.coordinator.ruler?.marks = highlights
         }
         if let request = focusRequest, request.id != context.coordinator.lastFocusID {
             context.coordinator.lastFocusID = request.id
             if let lines = focusLines {
                 DispatchQueue.main.async { textView.reveal(lines: lines) }
+            }
+        }
+        if let current = currentMatch, current.side == side, current.id != context.coordinator.lastScrolledMatchID {
+            context.coordinator.lastScrolledMatchID = current.id
+            let length = (textView.string as NSString).length
+            if NSMaxRange(current.range) <= length {
+                DispatchQueue.main.async {
+                    textView.scrollRangeToVisible(current.range)
+                    textView.showFindIndicator(for: current.range)
+                }
             }
         }
     }
@@ -123,6 +167,7 @@ struct CodeEditor: NSViewRepresentable {
         weak var textView: DiffTextView?
         weak var ruler: LineNumberRuler?
         var lastFocusID: UUID?
+        var lastScrolledMatchID: UUID?
         var wrapLines: Bool
 
         init(_ parent: CodeEditor) {
@@ -154,17 +199,62 @@ final class DiffTextView: NSTextView {
 
     var placeholder = ""
     var onFileDrop: ((URL) -> Void)?
+    var onFocus: (() -> Void)?
+    var onFind: (() -> Void)?
+    var onFindNext: (() -> Void)?
+    var onFindPrevious: (() -> Void)?
+    var onUseSelection: (() -> Void)?
     private(set) var highlights = EditorHighlights()
+    private(set) var searchMatches: [SearchMatch] = []
+    private(set) var currentMatchID: UUID?
+    private(set) var isSearchPresented: Bool = false
 
-    func apply(_ newValue: EditorHighlights) {
-        highlights = newValue
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { onFocus?() }
+        return ok
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onFocus?()
+        super.mouseDown(with: event)
+    }
+
+    func apply(
+        highlights: EditorHighlights,
+        searchMatches: [SearchMatch] = [],
+        currentMatchID: UUID? = nil,
+        isSearchPresented: Bool = false
+    ) {
+        self.highlights = highlights
+        self.searchMatches = searchMatches
+        self.currentMatchID = currentMatchID
+        self.isSearchPresented = isSearchPresented
+
         guard let layout = layoutManager else { return }
         let length = (string as NSString).length
         layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: length))
+        layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: NSRange(location: 0, length: length))
+
         // Skip highlights computed for a different (stale) version of the text.
-        if newValue.text == string {
-            for word in newValue.words where NSMaxRange(word.range) <= length && word.range.length > 0 {
+        if highlights.text == string {
+            for word in highlights.words where NSMaxRange(word.range) <= length && word.range.length > 0 {
                 layout.addTemporaryAttribute(.backgroundColor, value: DiffPalette.wordTint(word.style, appearance: effectiveAppearance), forCharacterRange: word.range)
+            }
+        }
+
+        if isSearchPresented {
+            let isDark = (effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+            let matchColor = NSColor.systemYellow.withAlphaComponent(isDark ? 0.35 : 0.40)
+            let activeColor = NSColor.systemOrange
+            for match in searchMatches where NSMaxRange(match.range) <= length && match.range.length > 0 {
+                let isCurrent = (match.id == currentMatchID)
+                if isCurrent {
+                    layout.addTemporaryAttribute(.backgroundColor, value: activeColor, forCharacterRange: match.range)
+                    layout.addTemporaryAttribute(.foregroundColor, value: NSColor.white, forCharacterRange: match.range)
+                } else {
+                    layout.addTemporaryAttribute(.backgroundColor, value: matchColor, forCharacterRange: match.range)
+                }
             }
         }
         needsDisplay = true
@@ -172,7 +262,12 @@ final class DiffTextView: NSTextView {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        apply(highlights)
+        apply(
+            highlights: highlights,
+            searchMatches: searchMatches,
+            currentMatchID: currentMatchID,
+            isSearchPresented: isSearchPresented
+        )
     }
 
     /// Full-width tints behind changed lines.
@@ -234,11 +329,28 @@ final class DiffTextView: NSTextView {
         if range.length > 0 { showFindIndicator(for: range) }
     }
 
-    // Undo/redo shortcuts work even when SwiftUI's menu doesn't route them.
+    // Undo/redo and search shortcuts work even when SwiftUI's menu doesn't route them.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command || event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command || flags == [.command, .shift],
            event.charactersIgnoringModifiers?.lowercased() == "z", window?.firstResponder === self {
             if event.modifierFlags.contains(.shift) { undoManager?.redo() } else { undoManager?.undo() }
+            return true
+        }
+        if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "f" {
+            onFind?()
+            return true
+        }
+        if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "g" {
+            onFindNext?()
+            return true
+        }
+        if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "g" {
+            onFindPrevious?()
+            return true
+        }
+        if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "e" {
+            onUseSelection?()
             return true
         }
         return super.performKeyEquivalent(with: event)
