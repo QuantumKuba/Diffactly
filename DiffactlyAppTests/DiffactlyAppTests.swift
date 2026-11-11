@@ -57,6 +57,23 @@ final class DiffDocumentTests: XCTestCase {
         XCTAssertEqual(document.rightText, "one")
     }
 
+    func testClearingOneSideOrBoth() {
+        let document = DiffDocument(left: "left", right: "right")
+        document.leftName = "a.txt"
+        XCTAssertEqual(document.sideToClear, .left)
+        document.clear(document.sideToClear)
+        XCTAssertTrue(document.isEmpty(.left))
+        XCTAssertNil(document.leftName)
+        XCTAssertEqual(document.rightText, "right")
+
+        document.leftText = "again"
+        document.activeSide = .right
+        XCTAssertEqual(document.sideToClear, .right)
+        document.clearAll()
+        XCTAssertTrue(document.isEmpty(.left))
+        XCTAssertTrue(document.isEmpty(.right))
+    }
+
     func testNavigationCyclesThroughChanges() async {
         let document = DiffDocument(left: "a\nx\nb\nc\nd\ne\nf\ny\n", right: "a\nX\nb\nc\nd\ne\nf\nY\n")
         await waitForDiff(document)

@@ -85,6 +85,14 @@ struct EditorPane: View {
                 Spacer(minLength: 8)
                 count
                 Button {
+                    document.clear(side)
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .disabled(document.isEmpty(side))
+                .help("Clear the \(document.title(for: side).lowercased()) text (⌘K clears the focused side, ⇧⌘K both)")
+                Button {
                     document.showOpenPanel(for: side)
                 } label: {
                     Image(systemName: "folder")

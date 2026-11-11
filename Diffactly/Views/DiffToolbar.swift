@@ -181,6 +181,16 @@ struct DiffCommands: Commands {
             Button("Swap Sides") { document?.swapSides() }
                 .keyboardShortcut("s", modifiers: [.command, .option])
             Divider()
+            Button("Clear \(document.map { $0.title(for: $0.sideToClear) } ?? "Original")") {
+                guard let document else { return }
+                document.clear(document.sideToClear)
+            }
+            .keyboardShortcut("k")
+            .disabled(document.map { $0.isEmpty($0.sideToClear) } ?? true)
+            Button("Clear Both") { document?.clearAll() }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .disabled(document.map { $0.isEmpty(.left) && $0.isEmpty(.right) } ?? true)
+            Divider()
             Toggle("Collapse Unchanged Lines", isOn: binding(\.collapseUnchanged, default: false))
             Toggle("Wrap Lines", isOn: binding(\.wrapLines, default: true))
             Toggle("Show Insights", isOn: binding(\.showInsights, default: false))

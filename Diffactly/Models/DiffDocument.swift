@@ -233,6 +233,16 @@ final class DiffDocument: ObservableObject {
         if side == .left { leftText = ""; leftName = nil } else { rightText = ""; rightName = nil }
     }
 
+    func clearAll() {
+        clear(.left)
+        clear(.right)
+    }
+
+    /// The side ⌘K clears: the editor last focused, or the original.
+    var sideToClear: Side { activeSide ?? .left }
+
+    func isEmpty(_ side: Side) -> Bool { text(for: side).isEmpty && (side == .left ? leftName : rightName) == nil }
+
     func apply(_ transform: TextTransform) {
         leftText = transform.apply(to: leftText)
         rightText = transform.apply(to: rightText)
