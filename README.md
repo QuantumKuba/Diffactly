@@ -4,9 +4,19 @@
 
 <h1 align="center">Diffactly</h1>
 
-<p align="center"><b>A free, fast, native macOS diff checker.</b></p>
+<p align="center"><b>A free, fast, native macOS diff checker, with optional AI writing tools.</b></p>
 
-A fast, native and free macOS text comparison tool with real-time diff highlighting and a minimal interface.
+Compare code, configs and documents with accurate line, word and character diffs, moved-block detection and live highlighting as you type. Keep several comparisons open in tabs and search both sides at once. When the writing itself needs work, bring your own AI model to humanize or rewrite a text, rewrite one passage in context, or summarize what changed. It works with OpenAI, Anthropic, Gemini and OpenRouter, or locally with Ollama, LM Studio and other servers on your Mac.
+
+## ✨ What's new
+
+- **AI writing tools (optional)**: rewrite or humanize either text, blend both into one, rewrite just a selected passage so it still fits the document around it, or get a plain-language summary of the differences. Attach reference documents (say, the rest of a paper) for background. AI stays off until you add a provider in Settings, and with a local server nothing leaves your Mac
+- **Tabs**: the tab bar is there from the first window, so the + (or ⌘T) opens another comparison right next to it. Tabs are named after their files, can be renamed with ⇧⌘R, and ⌘1–⌘9 jump between them
+- **Find (⌘F)**: search the original, the changed text or both, with regex, whole-word and case options, and step through matches with ⌘G / ⇧⌘G, even inside collapsed unchanged lines
+- **Connector ribbons**: the split view links moved paragraphs across the two sides and shows where a paragraph was split in two or two were merged
+- **Name your panes**: double-click *Original* or *Changed* to rename it. The names follow through menus, word counts and exported patches
+- **Clear** a side with its ⓧ button or ⌘K, or both with ⇧⌘K
+- **Changed shortcuts**: Edit, Split and Unified views are now ⌃⌘1, ⌃⌘2 and ⌃⌘3, since ⌘1–⌘9 switch tabs
 
 ## Screenshots
 
@@ -26,8 +36,10 @@ A fast, native and free macOS text comparison tool with real-time diff highlight
 
 - **Accurate diffs**: lines are aligned with a weighted algorithm that favours long, meaningful matches (re-indented lines still line up), and edited lines are paired by similarity so you see *what* changed inside them
 - **Three precisions**: Smart (word diff, refined to single letters for typo-sized edits), Word, and Character
-- **Moved-block detection**, including blocks that were moved *and* edited, with the edits highlighted
-- **Edit, Split and Unified views**: live highlighting while you type, or an aligned read-only comparison with collapsible unchanged lines and next/previous change navigation (⌃⌘↓ / ⌃⌘↑)
+- **Moved-block detection**, including blocks that were moved *and* edited, with the edits highlighted. In the split view, ribbons connect moved paragraphs and paragraphs that were split or merged
+- **Edit, Split and Unified views** (⌃⌘1–3): live highlighting while you type, or an aligned read-only comparison with collapsible unchanged lines and next/previous change navigation (⌃⌘↓ / ⌃⌘↑)
+- **Find (⌘F)**: plain text, whole word, case-sensitive or regular expression, in both sides or just one, with ⌘G / ⇧⌘G to step through matches and ⌘E to search for the selection
+- **Pane names**: double-click *Original* or *Changed* (or right-click it) to give a side its own name
 - **Ignore options**: whitespace, case, quote style, dash style and custom strings
 - **Transforms**: lowercase, sort lines, join lines, trim whitespace
 - **Word counts**: live word totals for both texts (with the net change) in the status bar, plus the words and characters in your selection while editing
