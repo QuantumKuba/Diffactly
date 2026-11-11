@@ -8,6 +8,8 @@
 
 Compare code, configs and documents with accurate line, word and character diffs, moved-block detection and live highlighting as you type. Keep several comparisons open in tabs and search both sides at once. When the writing itself needs work, bring your own AI model to humanize or rewrite a text, rewrite one passage in context, or summarize what changed. It works with OpenAI, Anthropic, Gemini and OpenRouter, or locally with Ollama, LM Studio and other servers on your Mac.
 
+Diffactly is a free, open-source alternative to FileMerge, Kaleidoscope, Beyond Compare and online tools like Diffchecker: your text never has to leave your Mac to be compared.
+
 ## ✨ What's new
 
 - **AI writing tools (optional)**: rewrite or humanize either text, blend both into one, rewrite just a selected passage so it still fits the document around it, or get a plain-language summary of the differences. Attach reference documents (say, the rest of a paper) for background. AI stays off until you add a provider in Settings, and with a local server nothing leaves your Mac
@@ -20,17 +22,21 @@ Compare code, configs and documents with accurate line, word and character diffs
 
 ## Screenshots
 
-**Review a code change** – side-by-side, with word- and character-level highlights inside edited lines.
+**Review a code change** – side-by-side, with word- and character-level highlights inside edited lines, and each comparison in its own tab.
 
-<img src="assets/screenshots/split-view-dark.png" alt="Diffactly split view comparing two versions of a TypeScript file in dark mode">
+<img src="assets/screenshots/split-view-dark.png" alt="Diffactly split view comparing two versions of a TypeScript file in dark mode, with four comparison tabs open">
 
-**Check a config change before you ship it** – a unified view in light mode, like `git diff` but readable.
+**Compare document revisions** – a ribbon follows the section that moved, and the optional Insights panel adds similarity, AI-writing tells, line composition and a clickable change map.
 
-<img src="assets/screenshots/unified-view-light.png" alt="Diffactly unified view showing a docker-compose.yml upgrade in light mode">
+<img src="assets/screenshots/insights-light.png" alt="Diffactly split view of edited release notes with a connector ribbon linking a moved section and the Insights panel showing AI writing tells">
 
-**Compare document revisions** – with the optional Insights panel: similarity, line composition, a clickable change map and word shifts.
+**Humanize AI-sounding text** – rewrite with your own model (here Mistral Small running locally in oMLX). The AI-tell count drops from 12 to 0, and *Use Result* puts the rewrite on the other side so you can see exactly what changed.
 
-<img src="assets/screenshots/insights-light.png" alt="Diffactly split view of release notes with the Insights panel open">
+<img src="assets/screenshots/ai-rewrite-dark.png" alt="Diffactly AI rewrite sheet humanizing a launch post with a local model, cutting the AI-tell count from 12 to 0">
+
+**Check a config change before you ship it** – a unified view in light mode, like `git diff` but readable, with Find (⌘F) highlighting every match.
+
+<img src="assets/screenshots/unified-view-light.png" alt="Diffactly unified view of a docker-compose.yml upgrade in light mode with the find bar highlighting matches">
 
 ## Features
 
