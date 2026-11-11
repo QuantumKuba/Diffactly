@@ -35,6 +35,18 @@ enum WindowTabs {
         window.makeKeyAndOrderFront(nil)
     }
 
+    private static let tabBarShownByDefaultKey = "TabBarShownByDefault"
+
+    /// Shows the tab bar even for a single tab — one wide tab with the "+" beside it —
+    /// so tabs are discoverable without knowing ⌘T. This happens once: from then on
+    /// AppKit itself remembers View ▸ Show/Hide Tab Bar, so hiding it sticks.
+    static func showTabBar(in window: NSWindow) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: tabBarShownByDefaultKey), let group = window.tabGroup else { return }
+        if !group.isTabBarVisible { window.toggleTabBar(nil) }
+        defaults.set(true, forKey: tabBarShownByDefaultKey)
+    }
+
     /// ⌘1…⌘8 pick that tab, ⌘9 always the last one (as in Ghostty and Safari).
     static func selectTab(number: Int) {
         let tabs = currentTabs

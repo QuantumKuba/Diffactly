@@ -49,7 +49,10 @@ struct ContentView: View {
         .navigationTitle(document.displayTabTitle)
         .navigationSubtitle(subtitle)
         .focusedSceneObject(document)
-        .background(WindowObserver(onAttach: WindowTabs.adopt) { window in DocumentRouter.shared.register(document, window: window) })
+        .background(WindowObserver(onAttach: WindowTabs.adopt) { window in
+            DocumentRouter.shared.register(document, window: window)
+            WindowTabs.showTabBar(in: window)
+        })
         .sheet(isPresented: $showIgnoreRules) { IgnoreRulesSheet(document: document) }
         .sheet(isPresented: $document.isRenamingTab) { RenameTabSheet(document: document) }
         .sheet(isPresented: $document.isShowingAI) { RewriteSheet(document: document, session: rewrite) }
