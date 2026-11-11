@@ -51,6 +51,10 @@ final class DiffDocument: ObservableObject {
     @Published var rightName: String?
     @Published var leftTitle: String = "Original"
     @Published var rightTitle: String = "Changed"
+    /// Custom name of this window's tab; empty means "name it automatically".
+    @Published var tabTitle: String = ""
+    /// Drives the "Rename Tab…" sheet.
+    @Published var isRenamingTab = false
 
     // MARK: Settings (persisted)
 
@@ -242,6 +246,30 @@ final class DiffDocument: ObservableObject {
     var sideToClear: Side { activeSide ?? .left }
 
     func isEmpty(_ side: Side) -> Bool { text(for: side).isEmpty && (side == .left ? leftName : rightName) == nil }
+
+    // MARK: Tab title
+
+    /// "a.txt ↔ b.txt" when files are open, nil otherwise.
+    var fileSummary: String? {
+        switch (leftName, rightName) {
+        case let (l?, r?): return "\(l) ↔ \(r)"
+        case let (l?, nil): return l
+        case let (nil, r?): return r
+        default: return nil
+        }
+    }
+
+    /// What the window (and its tab) is called when the user hasn't renamed it.
+    var automaticTabTitle: String { fileSummary ?? "Diffactly" }
+
+    var displayTabTitle: String {
+        let trimmed = tabTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? automaticTabTitle : trimmed
+    }
+
+    func setTabTitle(_ title: String) {
+        tabTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     func apply(_ transform: TextTransform) {
         leftText = transform.apply(to: leftText)

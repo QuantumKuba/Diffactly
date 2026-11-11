@@ -33,6 +33,7 @@ A fast, native and free macOS text comparison tool with real-time diff highlight
 - **Word counts**: live word totals for both texts (with the net change) in the status bar, plus the words and characters in your selection while editing
 - **Insights (optional)**: toggle the chart button (⌥⌘I) for similarity, line composition, a clickable change map and word-frequency shifts
 - **Open files** with ⌘O / ⇧⌘O, drag-and-drop, Finder's *Open With*, or `diffactly --gui`
+- **Tabs**: ⌘T opens a new comparison tab, ⌘1–⌘8 jump to a tab (⌘9 to the last), ⇧⌘[ / ⇧⌘] cycle through them, and ⇧⌘R renames the current tab
 - **Clear** a side with its ⓧ button or ⌘K (the focused side), or both with ⇧⌘K
 - **Auto, Dark and Light modes**
 - **Native**: SwiftUI + AppKit, no dependencies

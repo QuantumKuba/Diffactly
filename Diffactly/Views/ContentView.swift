@@ -5,6 +5,8 @@ import DiffactlyCore
 struct ContentView: View {
     @StateObject private var document = DiffDocument()
     @State private var showIgnoreRules = false
+    /// The tab's custom name survives relaunches along with the window.
+    @SceneStorage("tabTitle") private var storedTabTitle = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,11 +45,14 @@ struct ContentView: View {
             InsightsPanel(document: document)
                 .inspectorColumnWidth(min: 260, ideal: 310, max: 460)
         }
-        .navigationTitle("Diffactly")
+        .navigationTitle(document.displayTabTitle)
         .navigationSubtitle(subtitle)
         .focusedSceneObject(document)
-        .background(WindowObserver { window in DocumentRouter.shared.register(document, window: window) })
+        .background(WindowObserver(onAttach: WindowTabs.adopt) { window in DocumentRouter.shared.register(document, window: window) })
         .sheet(isPresented: $showIgnoreRules) { IgnoreRulesSheet(document: document) }
+        .sheet(isPresented: $document.isRenamingTab) { RenameTabSheet(document: document) }
+        .onAppear { if document.tabTitle.isEmpty { document.tabTitle = storedTabTitle } }
+        .onChange(of: document.tabTitle) { _, title in storedTabTitle = title }
         .alert("Couldn’t open file", isPresented: Binding(get: { document.errorMessage != nil }, set: { if !$0 { document.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -55,13 +60,10 @@ struct ContentView: View {
         }
     }
 
+    /// The open files, unless the title already shows them.
     private var subtitle: String {
-        switch (document.leftName, document.rightName) {
-        case let (l?, r?): return "\(l) ↔ \(r)"
-        case let (l?, nil): return l
-        case let (nil, r?): return r
-        default: return ""
-        }
+        guard let files = document.fileSummary, files != document.displayTabTitle else { return "" }
+        return files
     }
 }
 

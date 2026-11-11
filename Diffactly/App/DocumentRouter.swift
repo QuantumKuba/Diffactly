@@ -50,10 +50,13 @@ final class DocumentRouter {
 
 /// Reports the hosting NSWindow once the view is attached to it.
 struct WindowObserver: NSViewRepresentable {
+    /// Runs synchronously when the view joins a window, before it is shown.
+    var onAttach: ((NSWindow) -> Void)? = nil
     let onWindow: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = ObservingView()
+        view.onAttach = onAttach
         view.onWindow = onWindow
         return view
     }
@@ -61,9 +64,11 @@ struct WindowObserver: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     final class ObservingView: NSView {
+        var onAttach: ((NSWindow) -> Void)?
         var onWindow: ((NSWindow) -> Void)?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            if let window { onAttach?(window) }
             if let window { DispatchQueue.main.async { self.onWindow?(window) } }
         }
     }

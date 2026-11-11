@@ -9,7 +9,7 @@ struct DiffactlyApp: App {
     @State private var showingUpdateSheet = false
     
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: WindowTabs.windowID) {
             ContentView()
                 .preferredColorScheme(appearanceManager.effectiveColorScheme)
                 .background(WindowAccessor(appearance: appearanceManager.effectiveNSAppearance))
@@ -34,6 +34,7 @@ struct DiffactlyApp: App {
         .handlesExternalEvents(matching: [])
         .commands {
             DiffCommands()
+            TabCommands()
 
             CommandGroup(replacing: .appInfo) {
                 Button("About Diffactly") {

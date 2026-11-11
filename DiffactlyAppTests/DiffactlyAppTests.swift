@@ -74,6 +74,19 @@ final class DiffDocumentTests: XCTestCase {
         XCTAssertTrue(document.isEmpty(.right))
     }
 
+    func testTabTitleFallsBackToOpenFiles() {
+        let document = DiffDocument(left: "", right: "")
+        XCTAssertEqual(document.displayTabTitle, "Diffactly")
+        document.leftName = "a.txt"
+        document.rightName = "b.txt"
+        XCTAssertEqual(document.displayTabTitle, "a.txt ↔ b.txt")
+        document.setTabTitle("  Contract v2  ")
+        XCTAssertEqual(document.displayTabTitle, "Contract v2")
+        document.setTabTitle("   ")
+        XCTAssertEqual(document.tabTitle, "")
+        XCTAssertEqual(document.displayTabTitle, "a.txt ↔ b.txt")
+    }
+
     func testNavigationCyclesThroughChanges() async {
         let document = DiffDocument(left: "a\nx\nb\nc\nd\ne\nf\ny\n", right: "a\nX\nb\nc\nd\ne\nf\nY\n")
         await waitForDiff(document)

@@ -15,7 +15,7 @@ struct DiffToolbar: ToolbarContent {
             }
             .pickerStyle(.segmented)
             .labelStyle(.titleAndIcon)
-            .help("Edit the inputs, or view the aligned comparison side by side or unified")
+            .help("Edit the inputs, or view the aligned comparison side by side or unified (⌃⌘1–3)")
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
@@ -156,7 +156,7 @@ struct DiffCommands: Commands {
         CommandMenu("Compare") {
             ForEach(Array(DiffDocument.Mode.allCases.enumerated()), id: \.element) { index, mode in
                 Button(mode == .edit ? "Edit Inputs" : "\(mode.title) View") { document?.mode = mode }
-                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .control])
             }
             Divider()
             Button("Next Change") { document?.nextChange() }
