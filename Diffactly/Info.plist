@@ -19,5 +19,11 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Local AI servers (LM Studio, oMLX, Ollama, llama.cpp) speak plain http on localhost / the LAN. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

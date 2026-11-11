@@ -22,6 +22,10 @@ final class EditorSelectionTests: XCTestCase {
     }
 
     private func makeHostedEditor(text: String, onSelectionChange: @escaping (String) -> Void) -> (NSWindow, DiffTextView)? {
+        makeHostedEditor(text: text, onSelection: { text, _ in onSelectionChange(text) })
+    }
+
+    private func makeHostedEditor(text: String, onSelection: @escaping (String, NSRange) -> Void) -> (NSWindow, DiffTextView)? {
         let editor = CodeEditor(
             text: .constant(text),
             highlights: EditorHighlights(),
@@ -30,7 +34,7 @@ final class EditorSelectionTests: XCTestCase {
             focusRequest: nil,
             focusLines: nil,
             onFileDrop: { _ in },
-            onSelectionChange: onSelectionChange
+            onSelectionChange: onSelection
         )
         let host = NSHostingView(rootView: editor)
         host.frame = NSRect(x: 0, y: 0, width: 480, height: 320)

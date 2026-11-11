@@ -12,6 +12,9 @@ struct InsightsPanel: View {
             VStack(alignment: .leading, spacing: 14) {
                 SimilarityCard(stats: result.stats, identical: result.isIdentical)
                 StatTiles(stats: result.stats)
+                Card(title: "AI writing tells", subtitle: "Stock words, phrases and sentence shapes models overuse") {
+                    AITellsSummary(document: document)
+                }
                 if result.isIdentical {
                     Text("Charts appear once the texts differ.")
                         .font(.callout)
@@ -279,4 +282,47 @@ private struct MoveList: View {
     }
 
     private func span(_ r: ClosedRange<Int>) -> String { r.count == 1 ? "\(r.lowerBound)" : "\(r.lowerBound)–\(r.upperBound)" }
+}
+
+// MARK: - AI tells
+
+/// Per-side count of AI-writing tells with the most frequent ones, plus
+/// shortcuts into the AI sheet.
+private struct AITellsSummary: View {
+    @ObservedObject var document: DiffDocument
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            row(.left, document.leftTells)
+            row(.right, document.rightTells)
+            HStack {
+                Button("Humanize…") { document.showAI(.rewrite) }
+                Button("Summarize Differences…") { document.showAI(.summary) }
+            }
+            .controlSize(.small)
+            Text("A heuristic, not an AI detector: people use these words too.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func row(_ side: DiffDocument.Side, _ report: AITells.Report) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Circle().fill(report.level.color).frame(width: 7, height: 7)
+                Text(document.title(for: side)).font(.callout.weight(.medium))
+                Spacer()
+                Text(report.wordCount == 0 ? "empty" : "\(report.hits.count) · \(report.level.title.lowercased())")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            if !report.hits.isEmpty {
+                Text(report.topPhrases.prefix(6).map { $0.count > 1 ? "\($0.phrase) ×\($0.count)" : $0.phrase }.joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .help("\(report.hits.count) tells in \(report.wordCount) words, \(report.emDashes) em dashes")
+    }
 }

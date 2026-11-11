@@ -15,8 +15,12 @@ struct CodeEditor: NSViewRepresentable {
     var currentMatch: SearchMatch? = nil
     var isSearchPresented: Bool = false
     var onFileDrop: (URL) -> Void
-    /// Receives the selected text (empty when the caret is just a caret).
-    var onSelectionChange: (String) -> Void = { _ in }
+    /// Receives the selected text (empty when the caret is just a caret) and its UTF-16 range.
+    var onSelectionChange: (String, NSRange) -> Void = { _, _ in }
+    /// Selects and reveals a range once (e.g. a passage the AI just rewrote).
+    var selectionRequest: DiffDocument.SelectionRequest? = nil
+    /// Context menu → "Rewrite … with AI": the passage and its range.
+    var onRewriteSelection: ((String, NSRange) -> Void)? = nil
     var onFocus: (() -> Void)? = nil
     var onFind: (() -> Void)? = nil
     var onFindNext: (() -> Void)? = nil
@@ -42,6 +46,7 @@ struct CodeEditor: NSViewRepresentable {
         textView.onFindNext = onFindNext
         textView.onFindPrevious = onFindPrevious
         textView.onUseSelection = onUseSelection
+        textView.onRewriteSelection = onRewriteSelection
         textView.allowsUndo = true
         textView.isRichText = false
         textView.importsGraphics = false
@@ -100,15 +105,31 @@ struct CodeEditor: NSViewRepresentable {
         textView.onFindNext = onFindNext
         textView.onFindPrevious = onFindPrevious
         textView.onUseSelection = onUseSelection
+        textView.onRewriteSelection = onRewriteSelection
 
         if textView.string != text {
-            // External change (file opened, swap, transform): replace undoably.
-            let full = NSRange(location: 0, length: (textView.string as NSString).length)
-            if textView.shouldChangeText(in: full, replacementString: text) {
-                textView.textStorage?.replaceCharacters(in: full, with: NSAttributedString(string: text, attributes: textView.typingAttributes))
+            // External change (file opened, swap, transform, AI rewrite): replace
+            // only the part that differs, undoably, so ⌘Z restores exactly that
+            // edit and the scroll position survives small changes.
+            let old = textView.string as NSString
+            let change = Self.changedRanges(old: textView.string, new: text)
+            let inserted = (text as NSString).substring(with: change.new)
+            if textView.shouldChangeText(in: change.old, replacementString: inserted) {
+                textView.textStorage?.replaceCharacters(in: change.old, with: NSAttributedString(string: inserted, attributes: textView.typingAttributes))
                 textView.didChangeText()
             }
-            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            let replacedEverything = change.old.location == 0 && change.old.length == old.length
+            textView.setSelectedRange(NSRange(location: replacedEverything ? 0 : NSMaxRange(change.new), length: 0))
+        }
+        if let request = selectionRequest, request.side == side, request.id != context.coordinator.lastSelectionRequestID {
+            context.coordinator.lastSelectionRequestID = request.id
+            if NSMaxRange(request.range) <= (textView.string as NSString).length {
+                textView.setSelectedRange(request.range)
+                DispatchQueue.main.async {
+                    textView.scrollRangeToVisible(request.range)
+                    if request.range.length > 0 { textView.showFindIndicator(for: request.range) }
+                }
+            }
         }
         if context.coordinator.wrapLines != wrapLines {
             context.coordinator.wrapLines = wrapLines
@@ -146,6 +167,33 @@ struct CodeEditor: NSViewRepresentable {
         }
     }
 
+    /// The smallest ranges (old and new, UTF-16) that turn `old` into `new`:
+    /// everything outside them is a shared prefix or suffix. Never splits a
+    /// composed character such as an emoji or an accented letter.
+    static func changedRanges(old: String, new: String) -> (old: NSRange, new: NSRange) {
+        let a = Array(old.utf16), b = Array(new.utf16)
+        var prefix = 0
+        let limit = min(a.count, b.count)
+        while prefix < limit, a[prefix] == b[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < limit - prefix, a[a.count - 1 - suffix] == b[b.count - 1 - suffix] { suffix += 1 }
+        let oldNS = old as NSString, newNS = new as NSString
+        // Back the prefix up to the start of the character it ends inside.
+        for ns in [oldNS, newNS] where prefix > 0 && prefix < ns.length {
+            prefix = min(prefix, ns.rangeOfComposedCharacterSequence(at: prefix).location)
+        }
+        // Shrink the suffix so it starts at a character boundary in both strings.
+        for ns in [oldNS, newNS] where suffix > 0 {
+            let boundary = ns.length - suffix
+            guard boundary > prefix, boundary < ns.length else { continue }
+            let r = ns.rangeOfComposedCharacterSequence(at: boundary)
+            if r.location < boundary { suffix = ns.length - NSMaxRange(r) }
+        }
+        suffix = min(suffix, a.count - prefix, b.count - prefix)
+        return (NSRange(location: prefix, length: a.count - prefix - suffix),
+                NSRange(location: prefix, length: b.count - prefix - suffix))
+    }
+
     private func applyWrapping(_ textView: DiffTextView, _ scrollView: NSScrollView) {
         guard let container = textView.textContainer else { return }
         if wrapLines {
@@ -168,6 +216,7 @@ struct CodeEditor: NSViewRepresentable {
         weak var ruler: LineNumberRuler?
         var lastFocusID: UUID?
         var lastScrolledMatchID: UUID?
+        var lastSelectionRequestID: UUID?
         var wrapLines: Bool
 
         init(_ parent: CodeEditor) {
@@ -181,7 +230,7 @@ struct CodeEditor: NSViewRepresentable {
             let selected = range.length > 0 ? (tv.string as NSString).substring(with: range) : ""
             // AppKit can fire this while SwiftUI is mid-update (e.g. when the text
             // is replaced externally); publishing then is illegal, so hop a turn.
-            DispatchQueue.main.async { [weak self] in self?.parent.onSelectionChange(selected) }
+            DispatchQueue.main.async { [weak self] in self?.parent.onSelectionChange(selected, range) }
         }
 
         func textDidChange(_ notification: Notification) {
@@ -204,6 +253,7 @@ final class DiffTextView: NSTextView {
     var onFindNext: (() -> Void)?
     var onFindPrevious: (() -> Void)?
     var onUseSelection: (() -> Void)?
+    var onRewriteSelection: ((String, NSRange) -> Void)?
     private(set) var highlights = EditorHighlights()
     private(set) var searchMatches: [SearchMatch] = []
     private(set) var currentMatchID: UUID?
@@ -354,6 +404,50 @@ final class DiffTextView: NSTextView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    // MARK: Context menu
+
+    /// Adds "Rewrite Selection with AI…" (or "Rewrite Paragraph…" when nothing
+    /// is selected) to the top of the standard text menu.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        guard onRewriteSelection != nil, !string.isEmpty else { return menu }
+        let hasSelection = selectedRange().length > 0
+        let item = NSMenuItem(
+            title: hasSelection ? "Rewrite Selection with AI…" : "Rewrite Paragraph with AI…",
+            action: hasSelection ? #selector(rewriteSelectionWithAI(_:)) : #selector(rewriteParagraphWithAI(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
+        if !hasSelection {
+            // Remember where the click landed; the paragraph there is the target.
+            let point = convert(event.locationInWindow, from: nil)
+            item.representedObject = characterIndexForInsertion(at: point)
+        }
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+        return menu
+    }
+
+    @objc func rewriteSelectionWithAI(_ sender: Any?) {
+        let range = selectedRange()
+        guard range.length > 0 else { return }
+        onRewriteSelection?((string as NSString).substring(with: range), range)
+    }
+
+    @objc func rewriteParagraphWithAI(_ sender: Any?) {
+        let ns = string as NSString
+        let index = min((sender as? NSMenuItem)?.representedObject as? Int ?? selectedRange().location, max(0, ns.length - 1))
+        var range = ns.paragraphRange(for: NSRange(location: index, length: 0))
+        // Leave the line break out so the paragraph structure isn't touched.
+        while range.length > 0, let scalar = Unicode.Scalar(ns.character(at: NSMaxRange(range) - 1)), CharacterSet.newlines.contains(scalar) {
+            range.length -= 1
+        }
+        guard range.length > 0 else { return }
+        setSelectedRange(range)
+        onRewriteSelection?(ns.substring(with: range), range)
     }
 
     // Dropping a file loads its contents instead of inserting its path.

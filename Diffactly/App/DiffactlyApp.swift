@@ -69,6 +69,11 @@ struct DiffactlyApp: App {
                 }
             }
         }
+
+        Settings {
+            AISettingsView()
+                .preferredColorScheme(appearanceManager.effectiveColorScheme)
+        }
     }
 }
 

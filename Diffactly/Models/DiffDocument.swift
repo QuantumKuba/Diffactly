@@ -41,6 +41,15 @@ final class DiffDocument: ObservableObject {
         var side: Side
         var counts: TextCounts
         var text: String = ""
+        /// UTF-16 range in that side's text (NSNotFound when unknown).
+        var range = NSRange(location: NSNotFound, length: 0)
+    }
+
+    /// Asks an editor to select (and reveal) a range, e.g. a rewritten passage.
+    struct SelectionRequest: Equatable {
+        let id = UUID()
+        var side: Side
+        var range: NSRange
     }
 
     // MARK: Inputs
@@ -55,6 +64,17 @@ final class DiffDocument: ObservableObject {
     @Published var tabTitle: String = ""
     /// Drives the "Rename Tab…" sheet.
     @Published var isRenamingTab = false
+    /// Drives the AI sheet; `aiTask` picks which tab it opens on and
+    /// `aiStartsWithSelection` whether it rewrites just the selected passage.
+    @Published var isShowingAI = false
+    @Published var aiTask: AITask = .rewrite
+    @Published var aiStartsWithSelection = false
+
+    func showAI(_ task: AITask, selection: Bool = false) {
+        aiTask = task
+        aiStartsWithSelection = selection && self.selection != nil
+        isShowingAI = true
+    }
 
     // MARK: Settings (persisted)
 
@@ -88,8 +108,12 @@ final class DiffDocument: ObservableObject {
     @Published private(set) var isComputing = false
     @Published private(set) var leftHighlights = EditorHighlights()
     @Published private(set) var rightHighlights = EditorHighlights()
+    /// AI-writing tells in each text (computed with the diff, off the main thread).
+    @Published private(set) var leftTells = AITells.scan("")
+    @Published private(set) var rightTells = AITells.scan("")
     @Published private(set) var currentHunk: Int?
     @Published var focusRequest: FocusRequest?
+    @Published var selectionRequest: SelectionRequest?
     @Published var expandedFolds: Set<Int> = []
     @Published var errorMessage: String?
     @Published var search = SearchModel()
@@ -156,18 +180,21 @@ final class DiffDocument: ObservableObject {
                 try? await Task.sleep(nanoseconds: 120_000_000)
                 if Task.isCancelled { return }
             }
-            let computed = await Task.detached(priority: .userInitiated) { () -> (DiffResult, [DiffInsights.WordShift], EditorHighlights, EditorHighlights) in
+            let computed = await Task.detached(priority: .userInitiated) { () -> (DiffResult, [DiffInsights.WordShift], EditorHighlights, EditorHighlights, AITells.Report, AITells.Report) in
                 let result = DiffEngine.compare(left, right, options: options)
                 let shifts = DiffInsights.wordShifts(left: left, right: right, limit: 8)
                 return (result, shifts,
                         EditorHighlights(result: result, side: .left, text: left),
-                        EditorHighlights(result: result, side: .right, text: right))
+                        EditorHighlights(result: result, side: .right, text: right),
+                        AITells.scan(left), AITells.scan(right))
             }.value
             guard let self, !Task.isCancelled, token == self.generation else { return }
             self.result = computed.0
             self.wordShifts = computed.1
             self.leftHighlights = computed.2
             self.rightHighlights = computed.3
+            if self.leftTells != computed.4 { self.leftTells = computed.4 }
+            if self.rightTells != computed.5 { self.rightTells = computed.5 }
             self.search.updateRowIDs(with: computed.0)
             self.isComputing = false
             if let current = self.currentHunk, current >= computed.0.hunks.count { self.currentHunk = nil }
@@ -282,6 +309,18 @@ final class DiffDocument: ObservableObject {
         if side == .left { leftText = text } else { rightText = text }
     }
 
+    /// Replaces part of one side (undoable in the editor, which only swaps the
+    /// changed range) and selects the new text so it's easy to see.
+    @discardableResult
+    func replace(_ range: NSRange, in side: Side, with replacement: String) -> Bool {
+        guard let updated = SelectionRewrite.replacing(range, in: text(for: side), with: replacement) else { return false }
+        setText(updated, for: side)
+        let inserted = NSRange(location: range.location, length: (replacement as NSString).length)
+        selectionRequest = SelectionRequest(side: side, range: inserted)
+        updateSelection(side: side, selectedText: replacement, range: inserted)
+        return true
+    }
+
     func title(for side: Side) -> String {
         let raw = side == .left ? leftTitle : rightTitle
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -324,11 +363,11 @@ final class DiffDocument: ObservableObject {
     /// Called by an editor whenever its selection changes. An empty selection
     /// only clears the state if that same side owned it, so the other editor's
     /// selection isn't wiped by a click here.
-    func updateSelection(side: Side, selectedText: String) {
+    func updateSelection(side: Side, selectedText: String, range: NSRange = NSRange(location: NSNotFound, length: 0)) {
         if selectedText.isEmpty {
             if selection?.side == side { selection = nil }
         } else {
-            let next = SelectionCounts(side: side, counts: TextCounts(selectedText), text: selectedText)
+            let next = SelectionCounts(side: side, counts: TextCounts(selectedText), text: selectedText, range: range)
             if selection != next { selection = next }
         }
         activeSide = side

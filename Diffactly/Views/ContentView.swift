@@ -4,6 +4,7 @@ import DiffactlyCore
 
 struct ContentView: View {
     @StateObject private var document = DiffDocument()
+    @StateObject private var rewrite = RewriteSession()
     @State private var showIgnoreRules = false
     /// The tab's custom name survives relaunches along with the window.
     @SceneStorage("tabTitle") private var storedTabTitle = ""
@@ -51,6 +52,7 @@ struct ContentView: View {
         .background(WindowObserver(onAttach: WindowTabs.adopt) { window in DocumentRouter.shared.register(document, window: window) })
         .sheet(isPresented: $showIgnoreRules) { IgnoreRulesSheet(document: document) }
         .sheet(isPresented: $document.isRenamingTab) { RenameTabSheet(document: document) }
+        .sheet(isPresented: $document.isShowingAI) { RewriteSheet(document: document, session: rewrite) }
         .onAppear { if document.tabTitle.isEmpty { document.tabTitle = storedTabTitle } }
         .onChange(of: document.tabTitle) { _, title in storedTabTitle = title }
         .alert("Couldn’t open file", isPresented: Binding(get: { document.errorMessage != nil }, set: { if !$0 { document.errorMessage = nil } })) {
@@ -133,7 +135,12 @@ struct EditorPane: View {
                 currentMatch: document.search.currentMatch,
                 isSearchPresented: document.search.isPresented,
                 onFileDrop: { url in document.open(url, into: side) },
-                onSelectionChange: { selected in document.updateSelection(side: side, selectedText: selected) },
+                onSelectionChange: { selected, range in document.updateSelection(side: side, selectedText: selected, range: range) },
+                selectionRequest: document.selectionRequest,
+                onRewriteSelection: { selected, range in
+                    document.updateSelection(side: side, selectedText: selected, range: range)
+                    document.showAI(.rewrite, selection: true)
+                },
                 onFocus: { document.activeSide = side },
                 onFind: { document.openSearch(focusedSide: side) },
                 onFindNext: { document.findNext() },

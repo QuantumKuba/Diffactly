@@ -34,6 +34,15 @@ final class DocumentRouter {
         flush()
     }
 
+    /// Every open comparison window's document (one per tab).
+    var documents: [DiffDocument] {
+        entries.compactMap { $0.window == nil ? nil : $0.document }
+    }
+
+    func document(_ id: ObjectIdentifier) -> DiffDocument? {
+        documents.first { ObjectIdentifier($0) == id }
+    }
+
     func open(_ urls: [URL]) {
         pending.append(urls)
         flush()

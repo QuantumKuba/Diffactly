@@ -44,6 +44,18 @@ struct DiffToolbar: ToolbarContent {
             }
             .help("Transform both texts (undoable)")
 
+            Menu {
+                Button("Rewrite with AI…") { document.showAI(.rewrite) }
+                Button("Rewrite Selection with AI…") { document.showAI(.rewrite, selection: true) }
+                    .disabled(document.selection == nil)
+                Button("Summarize Differences with AI…") { document.showAI(.summary) }
+            } label: {
+                Label("AI", systemImage: "sparkles")
+            } primaryAction: {
+                document.showAI(.rewrite)
+            }
+            .help("Humanize, paraphrase or merge the texts (⌥⌘R), rewrite just the selection (⌥⌘E), or summarize the main differences (⇧⌥⌘R)")
+
             Button {
                 document.swapSides()
             } label: {
@@ -180,6 +192,15 @@ struct DiffCommands: Commands {
             }
             Button("Swap Sides") { document?.swapSides() }
                 .keyboardShortcut("s", modifiers: [.command, .option])
+            Button("Rewrite with AI…") { document?.showAI(.rewrite) }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+                .disabled(document == nil)
+            Button("Rewrite Selection with AI…") { document?.showAI(.rewrite, selection: true) }
+                .keyboardShortcut("e", modifiers: [.command, .option])
+                .disabled(document?.selection == nil)
+            Button("Summarize Differences with AI…") { document?.showAI(.summary) }
+                .keyboardShortcut("r", modifiers: [.command, .option, .shift])
+                .disabled(document == nil)
             Divider()
             Button("Clear \(document.map { $0.title(for: $0.sideToClear) } ?? "Original")") {
                 guard let document else { return }
