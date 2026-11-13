@@ -355,6 +355,76 @@ final class MarkupAndReferenceTests: XCTestCase {
     }
 }
 
+final class ThinkingEffortTests: XCTestCase {
+
+    private func body(_ kind: LLMProviderKind, _ thinking: ThinkingEffort) throws -> [String: Any] {
+        let client = LLMClient(endpoint: LLMEndpoint(kind: kind, baseURL: kind.defaultBaseURL, apiKey: "k", model: "m", thinking: thinking))
+        let r = try client.makeChatRequest(LLMRequest(system: "s", messages: [LLMMessage(.user, "hi")]), stream: true)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: r.httpBody ?? Data()) as? [String: Any])
+    }
+
+    func testFullSendsNothing() throws {
+        for kind in LLMProviderKind.allCases {
+            let b = try body(kind, .full)
+            for key in ["reasoning_effort", "reasoning", "thinking_budget", "chat_template_kwargs", "thinking"] { XCTAssertNil(b[key], "\(kind) \(key)") }
+            XCTAssertNil((b["generationConfig"] as? [String: Any])?["thinkingConfig"])
+        }
+    }
+
+    func testOMLXCapsThinkingTokens() throws {
+        let low = try body(.oMLX, .low)
+        XCTAssertEqual(low["thinking_budget"] as? Int, 2_048)
+        XCTAssertEqual(low["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(try body(.oMLX, .medium)["thinking_budget"] as? Int, 8_192)
+        let off = try body(.oMLX, .off)
+        XCTAssertEqual((off["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"], false)
+        XCTAssertNil(off["thinking_budget"])
+    }
+
+    func testOtherLocalServersGetEffortOrTheTemplateSwitch() throws {
+        XCTAssertEqual(try body(.ollama, .low)["reasoning_effort"] as? String, "low")
+        XCTAssertNil(try body(.llamaCpp, .low)["thinking_budget"])
+        XCTAssertEqual((try body(.llamaCpp, .off)["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"], false)
+    }
+
+    func testCloudProviders() throws {
+        XCTAssertEqual(try body(.openAI, .medium)["reasoning_effort"] as? String, "medium")
+        XCTAssertNil(try body(.openAI, .off)["reasoning_effort"], "OpenAI isn't offered Off")
+        XCTAssertEqual((try body(.openRouter, .low)["reasoning"] as? [String: String])?["effort"], "low")
+        XCTAssertEqual((try body(.openRouter, .off)["reasoning"] as? [String: Bool])?["enabled"], false)
+        let gemini = try XCTUnwrap(try body(.gemini, .low)["generationConfig"] as? [String: Any])
+        XCTAssertEqual((gemini["thinkingConfig"] as? [String: Int])?["thinkingBudget"], 2_048)
+        XCTAssertNil(try body(.anthropic, .low)["thinking"])
+        XCTAssertEqual(ThinkingEffort.options(for: .anthropic), [])
+    }
+}
+
+final class OutputBudgetTests: XCTestCase {
+
+    func testCloudKeepsItsBudget() {
+        XCTAssertEqual(OutputBudget.tokens(answerTokens: 4_000, cloud: 12_000, inputTokens: 5_000, contextLength: 200_000, isLocal: false), 12_000)
+    }
+
+    func testLocalUsesTheRoomLeftInTheWindow() {
+        // Qwen on oMLX with a 32k window: a 12k budget ran out mid-thought.
+        XCTAssertEqual(OutputBudget.tokens(answerTokens: 4_000, cloud: 12_055, inputTokens: 5_000, contextLength: 32_768, isLocal: true),
+                       32_768 - 5_000 - OutputBudget.windowMargin)
+    }
+
+    func testLocalIsCappedOnHugeWindows() {
+        XCTAssertEqual(OutputBudget.tokens(answerTokens: 1_000, cloud: 8_192, inputTokens: 2_000, contextLength: 262_144, isLocal: true), OutputBudget.localFloor)
+        XCTAssertEqual(OutputBudget.tokens(answerTokens: 10_000, cloud: 32_000, inputTokens: 12_000, contextLength: 262_144, isLocal: true), 80_000)
+    }
+
+    func testLocalWithoutAKnownWindowStillGetsTheFloor() {
+        XCTAssertEqual(OutputBudget.tokens(answerTokens: 1_000, cloud: 8_192, inputTokens: 2_000, contextLength: nil, isLocal: true), OutputBudget.localFloor)
+    }
+
+    func testOverfullWindowLeavesAMinimum() {
+        XCTAssertEqual(OutputBudget.tokens(answerTokens: 1_000, cloud: 8_192, inputTokens: 9_000, contextLength: 8_192, isLocal: true), 1_024)
+    }
+}
+
 final class LLMContextTests: XCTestCase {
 
     private func body(_ r: URLRequest) -> [String: Any] {

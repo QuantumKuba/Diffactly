@@ -85,6 +85,55 @@ public enum LLMProviderKind: String, Codable, CaseIterable, Sendable, Identifiab
     }
 }
 
+/// How much a reasoning model may think before it answers.
+///
+/// Servers expose this differently: oMLX takes a hard token budget (it closes
+/// the thinking block when the budget runs out, and the model then answers),
+/// chat templates take `reasoning_effort` (Qwen 3.8 and gpt-oss; Qwen 3.8
+/// defaults to its highest level, "xhigh", when none is sent) or only
+/// switch thinking on or off (`enable_thinking`), OpenAI and
+/// OpenRouter take an effort level and Gemini a token budget. Models that
+/// don't think ignore the setting, except that OpenAI rejects an effort level
+/// for its non-reasoning models.
+public enum ThinkingEffort: String, Codable, CaseIterable, Sendable, Identifiable {
+    /// Send nothing; the model thinks as much as it likes.
+    case full
+    case medium, low
+    case off
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .full: return "Full (model default)"
+        case .medium: return "Medium"
+        case .low: return "Low"
+        case .off: return "Off"
+        }
+    }
+
+    /// Thinking tokens allowed where a server takes a budget.
+    public var tokenBudget: Int? {
+        switch self {
+        case .full: return nil
+        case .medium: return 8_192
+        case .low: return 2_048
+        case .off: return 0
+        }
+    }
+
+    /// The levels a provider can act on. Diffactly doesn't turn on Claude's
+    /// extended thinking, so Anthropic has nothing to reduce; OpenAI's
+    /// reasoning models don't all accept switching it off.
+    public static func options(for kind: LLMProviderKind) -> [ThinkingEffort] {
+        switch kind {
+        case .anthropic: return []
+        case .openAI: return [.full, .medium, .low]
+        default: return allCases
+        }
+    }
+}
+
 public struct LLMMessage: Equatable, Sendable, Codable {
     public enum Role: String, Codable, Sendable { case user, assistant }
     public var role: Role
@@ -98,12 +147,14 @@ public struct LLMEndpoint: Sendable, Equatable {
     public var baseURL: String
     public var apiKey: String
     public var model: String
+    public var thinking: ThinkingEffort
 
-    public init(kind: LLMProviderKind, baseURL: String, apiKey: String = "", model: String) {
+    public init(kind: LLMProviderKind, baseURL: String, apiKey: String = "", model: String, thinking: ThinkingEffort = .full) {
         self.kind = kind
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.model = model
+        self.thinking = thinking
     }
 }
 
@@ -141,6 +192,39 @@ public struct LLMRequest: Sendable, Equatable {
     /// Context and instructions as one system prompt (context first).
     var combinedSystem: String {
         [context, system].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+}
+
+/// How many tokens a request may generate.
+///
+/// Reasoning models spend the output budget on thinking before they write a
+/// word of the answer, and some (Qwen 3, for one) draft the whole answer and
+/// check it point by point inside that thinking, so the thinking alone can
+/// run to several times the answer's length. Cloud providers bill for output
+/// and reject limits above a model's maximum, so they get a moderate budget
+/// sized to the answer. A local server costs nothing extra per token, so it
+/// gets as much as its context window leaves after the prompt (within a
+/// generous cap, so a model stuck in a loop still stops eventually).
+public enum OutputBudget {
+    /// Never less than this for a local model, whatever the answer's size.
+    public static let localFloor = 32_768
+    /// Local room for thinking, as a multiple of the expected answer.
+    public static let localAnswerMultiple = 8
+    /// Left free in the context window for chat-template tokens and
+    /// estimation error (prompts are estimated at four characters per token).
+    public static let windowMargin = 512
+
+    /// - Parameters:
+    ///   - answerTokens: rough length of the expected answer.
+    ///   - cloud: the budget to use for cloud providers.
+    ///   - inputTokens: rough size of the prompt.
+    ///   - contextLength: the model's whole context window, when known.
+    public static func tokens(answerTokens: Int, cloud: Int, inputTokens: Int, contextLength: Int?, isLocal: Bool) -> Int {
+        guard isLocal else { return cloud }
+        let generous = max(cloud, localFloor, answerTokens * localAnswerMultiple)
+        guard let window = contextLength, window > 0 else { return generous }
+        // Asking for more than fits makes some servers reject the request.
+        return max(1_024, min(generous, window - inputTokens - windowMargin))
     }
 }
 
@@ -351,6 +435,7 @@ public struct LLMClient: Sendable {
             // OpenAI's newer models reject `max_tokens`; local servers ignore the newer name.
             if endpoint.kind == .openAI { body["max_completion_tokens"] = req.maxTokens } else { body["max_tokens"] = req.maxTokens }
             if let t = req.temperature { body["temperature"] = t }
+            addOpenAIStyleThinking(to: &body)
         case .anthropic:
             request = URLRequest(url: try url("/messages"))
             body = [
@@ -377,6 +462,7 @@ public struct LLMClient: Sendable {
             if !parts.isEmpty { body["systemInstruction"] = ["parts": parts] }
             var config: [String: Any] = ["maxOutputTokens": req.maxTokens]
             if let t = req.temperature { config["temperature"] = t }
+            if let budget = effectiveThinking?.tokenBudget { config["thinkingConfig"] = ["thinkingBudget": budget] }
             body["generationConfig"] = config
         }
         request.httpMethod = "POST"
@@ -386,6 +472,35 @@ public struct LLMClient: Sendable {
         applyAuth(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
+    }
+
+    /// The thinking limit to send, or nil to leave the model's default.
+    var effectiveThinking: ThinkingEffort? {
+        let effort = endpoint.thinking
+        return effort != .full && ThinkingEffort.options(for: endpoint.kind).contains(effort) ? effort : nil
+    }
+
+    /// Each OpenAI-compatible server names the thinking controls differently;
+    /// servers ignore the fields they don't know.
+    func addOpenAIStyleThinking(to body: inout [String: Any]) {
+        guard let effort = effectiveThinking else { return }
+        switch endpoint.kind {
+        case .openAI:
+            body["reasoning_effort"] = effort.rawValue
+        case .openRouter:
+            body["reasoning"] = effort == .off ? ["enabled": false] : ["effort": effort.rawValue]
+        default:
+            if effort == .off {
+                // Qwen, DeepSeek and similar chat templates (oMLX, vLLM, llama.cpp).
+                body["chat_template_kwargs"] = ["enable_thinking": false]
+            } else {
+                // Templates with effort levels (Qwen 3.8, gpt-oss) and Ollama.
+                body["reasoning_effort"] = effort.rawValue
+                // oMLX also caps thinking tokens, which works for any
+                // thinking model, Qwen included.
+                if endpoint.kind == .oMLX, let budget = effort.tokenBudget { body["thinking_budget"] = budget }
+            }
+        }
     }
 
     func applyAuth(_ request: inout URLRequest) {
