@@ -153,6 +153,13 @@ private struct ProviderDetail: View {
                             .fixedSize()
                     }
                 }
+                let efforts = ThinkingEffort.options(for: provider.kind)
+                if !efforts.isEmpty {
+                    Picker("Thinking", selection: $provider.thinking) {
+                        ForEach(efforts) { Text($0.title).tag($0) }
+                    }
+                    Text(thinkingHelp).font(.caption).foregroundStyle(.secondary)
+                }
                 HStack {
                     Button("Fetch Models") { fetchModels() }
                     Button("Test Connection") { test() }
@@ -178,6 +185,21 @@ private struct ProviderDetail: View {
         .onChange(of: provider) { _, new in store.update(new) }
     }
 
+    private var thinkingHelp: String {
+        switch provider.kind {
+        case .oMLX:
+            return "Sets the model’s reasoning effort (Qwen 3.8 defaults to its highest) and caps its thinking: Low about 2k tokens, Medium about 8k. Lower is much faster; Off skips thinking, which usually rewrites less thoroughly."
+        case .openAI:
+            return "Reasoning effort for o-series and GPT-5 models. Other models reject it, so keep Full for them."
+        case .gemini:
+            return "Thinking budget for Gemini 2.5 and later: Low about 2k tokens, Medium about 8k. Some Pro models can’t turn thinking off."
+        case .openRouter:
+            return "Reasoning effort for models that think; others ignore it."
+        default:
+            return "Off switches thinking off for Qwen-style models (vLLM, llama.cpp); Low and Medium set the effort for gpt-oss and Ollama. Servers ignore what they don’t support."
+        }
+    }
+
     private var localHint: String {
         switch provider.kind {
         case .lmStudio: return "In LM Studio open the Developer tab, load a model and start the server (default port 1234)."
@@ -189,7 +211,7 @@ private struct ProviderDetail: View {
     }
 
     private var endpoint: LLMEndpoint {
-        LLMEndpoint(kind: provider.kind, baseURL: provider.baseURL, apiKey: apiKey, model: provider.model)
+        LLMEndpoint(kind: provider.kind, baseURL: provider.baseURL, apiKey: apiKey, model: provider.model, thinking: provider.thinking)
     }
 
     private func fetchModels() {

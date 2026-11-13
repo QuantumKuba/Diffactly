@@ -128,8 +128,20 @@ final class RewriteSession: ObservableObject {
     /// The model is reasoning and hasn't started its answer yet.
     @Published private(set) var isThinking = false
     @Published private(set) var reasoningCharacters = 0
-    /// The answer hit the output token limit.
-    @Published private(set) var wasTruncated = false
+    /// How the output token limit cut a run short.
+    enum Truncation: Equatable {
+        /// The budget ran out while the model was still thinking: no answer at all.
+        case thinking
+        /// The answer started but is cut off.
+        case answer
+        /// The second pass ran out while thinking, so the result is the first draft.
+        case secondPass
+    }
+
+    /// Set when the last run hit the output token limit.
+    @Published private(set) var truncation: Truncation?
+    /// The output token limit of the last run.
+    @Published private(set) var outputBudget = 0
     @Published private(set) var startedAt: Date?
     @Published private(set) var duration: TimeInterval?
     /// Whether the last rewrite ran the checking pass.
@@ -372,7 +384,7 @@ final class RewriteSession: ObservableObject {
         self.phase = phase
         startedAt = Date()
         duration = nil
-        wasTruncated = false
+        truncation = nil
         isThinking = false
         reasoningCharacters = 0
     }
@@ -381,10 +393,14 @@ final class RewriteSession: ObservableObject {
         let spec = rewriteSpec(document: document, store: store)
         let sourceText = (spec.source != .right ? spec.leftText : "") + (spec.source != .left ? spec.rightText : "")
         let markup = spec.markup ?? TextMarkup.detect(sourceText)
+        let messages = RewritePrompt.messages(for: spec)
         // Room for the answer (≈ 2× the source) plus a reasoning model's thinking.
-        let maxTokens = min(32_000, max(8_192, sourceText.count / 2 + 4_096))
+        let maxTokens = Self.outputBudget(
+            answerTokens: sourceText.count / 4,
+            cloud: min(32_000, max(8_192, sourceText.count / 2 + 4_096)),
+            input: messages, provider: provider)
         startRewrite(
-            first: RewritePrompt.messages(for: spec),
+            first: messages,
             audit: { draft, flagged in RewritePrompt.auditMessages(draft: draft, spec: spec, flagged: flagged) },
             sourceUsesDashes: markup.usesEmDashes(sourceText),
             maxTokens: maxTokens,
@@ -403,11 +419,15 @@ final class RewriteSession: ObservableObject {
         }
         let spec = selectionSpec(passage, document: document, store: store)
         let markup = spec.markup ?? TextMarkup.detect(spec.documentText, fileName: spec.fileName)
+        let messages = SelectionRewrite.messages(for: spec)
         startRewrite(
-            first: SelectionRewrite.messages(for: spec),
+            first: messages,
             audit: { draft, flagged in SelectionRewrite.auditMessages(draft: draft, spec: spec, flagged: flagged) },
             sourceUsesDashes: markup.usesEmDashes(passage.text),
-            maxTokens: min(16_000, max(6_144, passage.text.count / 2 + 4_096)),
+            maxTokens: Self.outputBudget(
+                answerTokens: passage.text.count / 4,
+                cloud: min(16_000, max(6_144, passage.text.count / 2 + 4_096)),
+                input: messages, provider: provider),
             passage: passage,
             label: "\(resolvedPrompt(in: store).name) (selection) · \(provider.model)",
             client: LLMClient(endpoint: store.endpoint(for: provider))
@@ -436,8 +456,9 @@ final class RewriteSession: ObservableObject {
         begin(.rewrite, phase: .drafting)
         job = Task { [weak self] in
             do {
-                guard let draft = try await self?.stream(client, Self.request(first, temperature: temperature, maxTokens: maxTokens), into: \.output),
+                guard let (draft, draftCut) = try await self?.stream(client, Self.request(first, temperature: temperature, maxTokens: maxTokens), into: \.output),
                       let self, !Task.isCancelled else { return }
+                if draftCut { self.truncation = draft.isEmpty ? .thinking : .answer }
 
                 // Second pass: always, or only when the scan still finds tells.
                 let scan = AITells.scan(draft)
@@ -447,9 +468,10 @@ final class RewriteSession: ObservableObject {
                 if runAudit {
                     self.phase = .auditing
                     self.didAudit = true
-                    let revised = try await self.stream(client, Self.request(audit(draft, flagged), temperature: temperature, maxTokens: maxTokens), into: \.output, keepUntilText: true)
+                    let (revised, auditCut) = try await self.stream(client, Self.request(audit(draft, flagged), temperature: temperature, maxTokens: maxTokens), into: \.output, keepUntilText: true)
                     // An empty or cancelled audit keeps the draft.
                     if revised.isEmpty { self.output = draft }
+                    if auditCut { self.truncation = revised.isEmpty ? (self.truncation ?? .secondPass) : .answer }
                 }
                 guard !Task.isCancelled else { return }
                 self.finish(label: label)
@@ -473,13 +495,15 @@ final class RewriteSession: ObservableObject {
         }
         let client = LLMClient(endpoint: store.endpoint(for: provider))
         let temperature = useCustomTemperature ? min(temperature, 0.7) : nil
-        let maxTokens = summaryDetail == .brief ? 8_192 : 16_384
+        let m = DiffSummaryPrompt.messages(for: spec)
+        let cloud = summaryDetail == .brief ? 8_192 : 16_384
+        let maxTokens = Self.outputBudget(answerTokens: cloud / 4, cloud: cloud, input: m, provider: provider)
         let label = "\(summaryDetail.title) summary · \(provider.model)"
         job = Task { [weak self] in
             do {
-                let m = DiffSummaryPrompt.messages(for: spec)
-                _ = try await self?.stream(client, Self.request(m, temperature: temperature, maxTokens: maxTokens), into: \.summary)
-                guard let self, !Task.isCancelled else { return }
+                guard let (text, cut) = try await self?.stream(client, Self.request(m, temperature: temperature, maxTokens: maxTokens), into: \.summary),
+                      let self, !Task.isCancelled else { return }
+                if cut { self.truncation = text.isEmpty ? .thinking : .answer }
                 self.finish(label: label)
             } catch {
                 guard let self else { return }
@@ -487,6 +511,12 @@ final class RewriteSession: ObservableObject {
                 self.fail(error)
             }
         }
+    }
+
+    /// Local servers get room for long thinking; see `OutputBudget`.
+    private static func outputBudget(answerTokens: Int, cloud: Int, input: RewritePrompt.Messages, provider: AIProvider) -> Int {
+        OutputBudget.tokens(answerTokens: answerTokens, cloud: cloud, inputTokens: input.estimatedTokens,
+                            contextLength: provider.contextLength, isLocal: provider.kind.isLocal)
     }
 
     private static func request(_ m: RewritePrompt.Messages, temperature: Double?, maxTokens: Int) -> LLMRequest {
@@ -497,9 +527,11 @@ final class RewriteSession: ObservableObject {
     /// and returns the cleaned final text. With `keepUntilText`, what `target`
     /// shows stays until the new answer starts (the second pass shouldn't
     /// blank the draft while the model thinks).
-    private func stream(_ client: LLMClient, _ request: LLMRequest, into target: ReferenceWritableKeyPath<RewriteSession, String>, keepUntilText: Bool = false) async throws -> String {
+    private func stream(_ client: LLMClient, _ request: LLMRequest, into target: ReferenceWritableKeyPath<RewriteSession, String>, keepUntilText: Bool = false) async throws -> (text: String, truncated: Bool) {
         raw = ""
         reasoningCharacters = 0
+        outputBudget = request.maxTokens
+        var truncated = false
         var lastUpdate = Date.distantPast
         func publish() {
             let cleaned = RewritePrompt.clean(raw)
@@ -512,14 +544,14 @@ final class RewriteSession: ObservableObject {
             switch delta {
             case .text(let t): raw += t
             case .reasoning(let t): reasoningCharacters += t.count
-            case .truncated: wasTruncated = true
+            case .truncated: truncated = true
             }
             // Repainting on every token is wasteful; ~20 fps is plenty.
             if Date().timeIntervalSince(lastUpdate) > 0.05 { publish() }
         }
         publish()
         isThinking = false
-        return RewritePrompt.clean(raw)
+        return (RewritePrompt.clean(raw), truncated)
     }
 
     func stop() {
@@ -562,7 +594,7 @@ final class RewriteSession: ObservableObject {
         } else {
             summary = item.text
         }
-        wasTruncated = false
+        truncation = nil
         duration = nil
     }
 

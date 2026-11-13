@@ -16,6 +16,8 @@ struct AIProvider: Codable, Identifiable, Hashable {
     /// Context windows the server reported, by model (optional so settings
     /// saved before this existed still decode).
     var contextLengths: [String: Int]?
+    /// How much a reasoning model may think (nil in settings saved before this existed).
+    var thinkingEffort: ThinkingEffort?
 
     init(kind: LLMProviderKind, name: String? = nil) {
         self.kind = kind
@@ -25,6 +27,11 @@ struct AIProvider: Codable, Identifiable, Hashable {
     }
 
     var displayName: String { name.trimmingCharacters(in: .whitespaces).isEmpty ? kind.title : name }
+
+    var thinking: ThinkingEffort {
+        get { thinkingEffort ?? .full }
+        set { thinkingEffort = newValue }
+    }
 
     /// The chosen model's context window, when known.
     var contextLength: Int? { contextLengths?[model] }
@@ -123,7 +130,7 @@ final class AIStore: ObservableObject {
     }
 
     func endpoint(for provider: AIProvider) -> LLMEndpoint {
-        LLMEndpoint(kind: provider.kind, baseURL: provider.baseURL, apiKey: apiKey(for: provider.id), model: provider.model)
+        LLMEndpoint(kind: provider.kind, baseURL: provider.baseURL, apiKey: apiKey(for: provider.id), model: provider.model, thinking: provider.thinking)
     }
 
     // MARK: API keys

@@ -258,6 +258,16 @@ struct RewriteSheet: View {
                 .help("Pick from the models this server offers")
             }
             if let modelError { Text(modelError).font(.caption).foregroundStyle(.red) }
+            let efforts = ThinkingEffort.options(for: provider.kind)
+            if !efforts.isEmpty {
+                Picker("Thinking", selection: Binding(
+                    get: { provider.thinking },
+                    set: { var p = provider; p.thinking = $0; store.update(p) }
+                )) {
+                    ForEach(efforts) { Text($0.title).tag($0) }
+                }
+                .help("How long a reasoning model may think before answering. Lower is much faster; Off skips thinking, which usually rewrites less thoroughly. Saved with the provider.")
+            }
         }
         Toggle("Custom temperature", isOn: $session.useCustomTemperature)
             .help("Off leaves sampling to the model’s default. 0.7–1.0 suits rewriting; higher drifts from the meaning. Summaries are capped at 0.7.")
@@ -306,8 +316,8 @@ struct RewriteSheet: View {
             .padding(.horizontal, 12)
             .frame(height: 34)
             Divider()
-            if session.wasTruncated, session.runTask == session.task {
-                Label("The answer hit the output token limit and is cut off. Try a shorter text or a model with a larger limit.", systemImage: "exclamationmark.triangle.fill")
+            if let truncation = session.truncation, session.runTask == session.task {
+                Label(truncationMessage(truncation), systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(DiffPalette.modified)
                     .padding(.horizontal, 12)
@@ -411,6 +421,22 @@ struct RewriteSheet: View {
             case .idle:
                 EmptyView()
             }
+        }
+    }
+
+    private func truncationMessage(_ truncation: RewriteSession.Truncation) -> String {
+        let budget = session.outputBudget.formatted(.number.notation(.compactName))
+        let isLocal = session.resolvedProvider(in: store)?.kind.isLocal ?? false
+        let room = isLocal
+            ? "Give the model a bigger context window in your server’s settings, or use a shorter text."
+            : "Try a shorter text, or a model that thinks less."
+        switch truncation {
+        case .thinking:
+            return "The model spent its whole output budget (\(budget) tokens) thinking and never started the answer. \(room)"
+        case .secondPass:
+            return "The second pass spent its whole output budget (\(budget) tokens) thinking, so this is the first draft. \(room)"
+        case .answer:
+            return "The answer hit the output token limit (\(budget) tokens) and is cut off. \(room)"
         }
     }
 
