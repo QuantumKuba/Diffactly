@@ -9,6 +9,8 @@ struct AISettingsView: View {
                 .tabItem { Label("AI Providers", systemImage: "cpu") }
             PromptsSettings()
                 .tabItem { Label("Prompts", systemImage: "text.quote") }
+            InlineSuggestionSettings()
+                .tabItem { Label("Suggestions", systemImage: "sparkles") }
         }
         .frame(width: 760, height: 520)
     }
@@ -260,6 +262,24 @@ private struct ProviderDetail: View {
                 status = (false, error.localizedDescription)
             }
         }
+    }
+}
+
+// MARK: - Inline suggestions
+
+private struct InlineSuggestionSettings: View {
+    @AppStorage(RewriteSession.optionsFirstKey) private var optionsFirst = false
+
+    var body: some View {
+        Form {
+            Section("Humanize Selection") {
+                Toggle(isOn: $optionsFirst) {
+                    Text("Show options before humanizing")
+                    Text("Humanize Selection (⌥⌘E) opens the suggestion’s settings (prompt, strength, blend with the other side, model) and waits for you to start it. Humanize Selection with Options… (⌥⇧⌘E) always does.")
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

@@ -5,6 +5,21 @@
 	<!-- Lets Finder "Open With", the Dock and `diffactly --gui` hand files to Diffactly. -->
 	<key>CFBundleDocumentTypes</key>
 	<array>
+		<!-- Saved sessions (File ▸ Save Session): a package of tabs, texts and their work. -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Diffactly Session</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSTypeIsPackage</key>
+			<true/>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.diffactly.session</string>
+			</array>
+		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>Text</string>
@@ -17,6 +32,27 @@
 				<string>public.text</string>
 				<string>public.data</string>
 			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.diffactly.session</string>
+			<key>UTTypeDescription</key>
+			<string>Diffactly Session</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+				<string>public.composite-content</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>diffactly</string>
+				</array>
+			</dict>
 		</dict>
 	</array>
 	<!-- Local AI servers (LM Studio, oMLX, Ollama, llama.cpp) speak plain http on localhost / the LAN. -->

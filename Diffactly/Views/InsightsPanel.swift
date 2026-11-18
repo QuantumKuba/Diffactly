@@ -296,7 +296,11 @@ private struct AITellsSummary: View {
             row(.left, document.leftTells)
             row(.right, document.rightTells)
             HStack {
-                Button("Humanize…") { document.showAI(.rewrite) }
+                // Opens the AI panel on the selection when there is one.
+                Button(document.selection == nil ? "Humanize…" : "Humanize Selection…") { document.showAI(.rewrite) }
+                    .help(document.selection == nil
+                          ? "Open the AI panel to rewrite a whole text (select a passage in Edit mode to rewrite only that)"
+                          : "Open the AI panel on the selected passage")
                 Button("Summarize Differences…") { document.showAI(.summary) }
             }
             .controlSize(.small)
@@ -321,6 +325,11 @@ private struct AITellsSummary: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+            }
+            if report.hasUniformCadence {
+                Text("Uniform cadence (CV \(report.burstinessCV.formatted(.number.precision(.fractionLength(2)))))")
+                    .foregroundStyle(.secondary)
+                    .font(.caption2.monospacedDigit())
             }
         }
         .help("\(report.hits.count) tells in \(report.wordCount) words, \(report.emDashes) em dashes")

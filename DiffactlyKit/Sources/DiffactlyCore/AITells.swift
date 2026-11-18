@@ -42,6 +42,27 @@ public enum AITells {
         public var wordCount: Int
         /// Em dashes (—) in the text; a tell when dense, so counted separately.
         public var emDashes: Int
+        /// Sentence-length coefficient of variation (σ / μ). Low values (< 0.32)
+        /// indicate flat, uniform AI sentence cadence ("burstiness").
+        public var burstinessCV: Double
+
+        public init(
+            hits: [Hit],
+            wordCount: Int,
+            emDashes: Int,
+            burstinessCV: Double = 0
+        ) {
+            self.hits = hits
+            self.wordCount = wordCount
+            self.emDashes = emDashes
+            self.burstinessCV = burstinessCV
+        }
+
+        /// True when the text is long enough to judge rhythm and sentence lengths
+        /// are unnaturally uniform (a statistical AI cadence signature).
+        public var hasUniformCadence: Bool {
+            wordCount >= 60 && burstinessCV > 0 && burstinessCV < 0.32
+        }
 
         /// Tells per 100 words, em dashes beyond one per 150 words included.
         public var density: Double {
@@ -67,7 +88,9 @@ public enum AITells {
         }
 
         public static func == (a: Report, b: Report) -> Bool {
-            a.hits == b.hits && a.wordCount == b.wordCount && a.emDashes == b.emDashes
+            a.hits == b.hits
+                && a.wordCount == b.wordCount
+                && a.emDashes == b.emDashes
         }
     }
 
@@ -104,6 +127,9 @@ public enum AITells {
         "furthermore", "moreover", "additionally", "notably", "arguably",
         "crucial", "vital", "comprehensive", "garner", "garnered", "supercharge",
         "enduring", "profound", "beacon", "symphony", "boasts", "paradigm",
+        "burgeoning", "cornerstone", "paragon", "crux", "reimagining",
+        "spearhead", "spearheading", "catalyze", "catalyzing", "synergistic",
+        "paradigmatic", "transcend", "transcending", "indelible",
     ]
 
     /// Stock phrases. Lower-case; matched case-insensitively on word boundaries.
@@ -137,6 +163,12 @@ public enum AITells {
         "here's what you need to know", "the real question is", "what really matters",
         "despite these challenges", "marks a pivotal moment", "setting the stage for",
         "reflects a broader", "let that sink in", "experts argue", "paradigm shift",
+        "let's explore", "here's a breakdown", "dive deeper", "worth mentioning",
+        "it bears mentioning", "cannot be overstated", "can't be overstated",
+        "broadly speaking", "by and large", "stands out as", "serves as a reminder",
+        "underscores the importance", "highlights the importance", "moving forward",
+        "going forward", "on the flip side", "that being said", "with that in mind",
+        "at this juncture",
     ]
 
     /// Chatbot residue that should never survive into finished prose.
@@ -147,7 +179,8 @@ public enum AITells {
         "i'd be happy to", "i would be happy to", "here is the rewritten",
         "here's the rewritten", "rewritten version", "revised version",
         "as of my last", "as of my knowledge", "knowledge cutoff",
-        "based on available information",
+        "based on available information", "here's a draft", "here is a draft",
+        "would you like me to", "happy to adjust", "happy to refine",
     ]
 
     /// Sentence shapes, as regular expressions (case-insensitive).
@@ -164,6 +197,8 @@ public enum AITells {
         // "Here's the thing:" / "The result?" style hooks
         #"\bhere's the (?:thing|kicker|catch)\b"#,
         #"\bthe (?:result|answer|kicker|catch)\?"#,
+        // Participial -ing tail closers (", highlighting its importance.")
+        #",\s+(?:highlighting|underscoring|showcasing|demonstrating|illustrating|reflecting|fostering|ensuring|paving|cementing)\b[^.!?]{0,70}[.!?]"#,
     ]
 
     // MARK: Scanning
@@ -220,7 +255,13 @@ public enum AITells {
         hits.sort { $0.range.location < $1.range.location }
         let words = text.split(whereSeparator: { $0.isWhitespace }).count
         let dashes = text.reduce(0) { $0 + ($1 == "—" ? 1 : 0) } + latexEmDashCount(text)
-        return Report(hits: hits, wordCount: words, emDashes: dashes)
+        let burstiness = sentenceBurstinessCV(text)
+        return Report(
+            hits: hits,
+            wordCount: words,
+            emDashes: dashes,
+            burstinessCV: burstiness
+        )
     }
 
     private static let latexEmDash = try? NSRegularExpression(pattern: #"(?<=[\p{L}\p{N}\s}.,)])---(?=[\p{L}\p{N}\s{\\])"#)
@@ -229,5 +270,121 @@ public enum AITells {
     static func latexEmDashCount(_ text: String) -> Int {
         guard text.contains("---"), let re = latexEmDash else { return 0 }
         return re.numberOfMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
+    }
+
+    // MARK: - Cadence & Number Preservation
+
+    private static let sentenceSplitRegex = try? NSRegularExpression(pattern: #"[.!?]+(?:\s+|$)"#)
+    private static let wordTokenRegex = try? NSRegularExpression(pattern: #"[\p{L}\p{N}]+"#)
+
+    /// Coefficient of variation (σ / μ) of sentence word lengths.
+    /// Human writing typically mixes short and long sentences (CV ≥ 0.40);
+    /// unedited LLM output often clusters around a uniform sentence length (CV < 0.32).
+    public static func sentenceBurstinessCV(_ text: String) -> Double {
+        let ns = text as NSString
+        guard ns.length > 0, let re = sentenceSplitRegex else { return 0 }
+        let full = NSRange(location: 0, length: ns.length)
+        var sentences: [String] = []
+        var start = 0
+        for m in re.matches(in: text, range: full) {
+            let chunk = ns.substring(with: NSRange(location: start, length: m.range.location - start))
+            sentences.append(chunk)
+            start = NSMaxRange(m.range)
+        }
+        if start < ns.length {
+            sentences.append(ns.substring(from: start))
+        }
+        let lengths = sentences.compactMap { s -> Double? in
+            let count = wordTokens(s).count
+            return count >= 2 ? Double(count) : nil
+        }
+        guard lengths.count >= 3 else { return 0 }
+        let mean = lengths.reduce(0, +) / Double(lengths.count)
+        guard mean > 0 else { return 0 }
+        let variance = lengths.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(lengths.count)
+        return variance.squareRoot() / mean
+    }
+
+    private static func wordTokens(_ text: String) -> [String] {
+        guard let re = wordTokenRegex else { return [] }
+        let ns = text as NSString
+        return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map {
+            ns.substring(with: $0.range).lowercased()
+        }
+    }
+
+    private static let nonProseStripRegex = try? NSRegularExpression(
+        pattern: #"https?://\S+|\\(?:cite|citep|citet|ref|eqref|autoref|label|usepackage)\{[^{}]*\}|(?m)^[ \t]*\d{1,2}[.)][ \t]+"#
+    )
+    private static let numberTokenRegex = try? NSRegularExpression(
+        pattern: #"(?<![\p{L}\p{N}_\\])[$€£¥]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?(?![\p{L}\p{N}_])"#
+    )
+
+    /// Extracts factual numbers from `text` in order of appearance (excluding URLs,
+    /// LaTeX citation/ref keys, and line-leading list numbering).
+    public static func extractNumbers(_ text: String) -> [String] {
+        let cleaned = stripNonProseNumericContexts(text)
+        guard let re = numberTokenRegex else { return [] }
+        let ns = cleaned as NSString
+        return re.matches(in: cleaned, range: NSRange(location: 0, length: ns.length)).map {
+            ns.substring(with: $0.range)
+        }
+    }
+
+    /// Returns any numbers from `source` that were dropped or altered in `target`.
+    /// Formatting differences in grouping commas or currency/percent symbols
+    /// (e.g. `$1,200` vs `1200` or `61.3%` vs `61.3 percent`) are accepted as matching;
+    /// changed digits or rounded values (e.g. `61.3%` → `61%`) are flagged.
+    public static func missingNumbers(from source: String, in target: String) -> [String] {
+        let sourceTokens = extractNumbers(source)
+        guard !sourceTokens.isEmpty else { return [] }
+        let targetCanonical = Set(extractNumbers(target).map(canonicalNumber))
+        var missing: [String] = []
+        var seenCanonical = Set<String>()
+        for token in sourceTokens {
+            let canon = canonicalNumber(token)
+            guard !canon.isEmpty, !seenCanonical.contains(canon) else { continue }
+            if !targetCanonical.contains(canon) {
+                missing.append(token)
+                seenCanonical.insert(canon)
+            }
+        }
+        return missing
+    }
+
+    private static func stripNonProseNumericContexts(_ text: String) -> String {
+        guard let re = nonProseStripRegex else { return text }
+        let ns = text as NSString
+        return re.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: ns.length), withTemplate: " ")
+    }
+
+    private static func canonicalNumber(_ token: String) -> String {
+        var s = token.filter { $0.isNumber || $0 == "." }
+        if s.contains(".") {
+            while s.hasSuffix("0") { s.removeLast() }
+            if s.hasSuffix(".") { s.removeLast() }
+        }
+        return s
+    }
+
+    /// Verification metrics comparing a rewrite result against its source.
+    public struct Verification: Equatable, Sendable {
+        /// Total distinct factual numbers present in the source text.
+        public var sourceNumberCount: Int
+        /// Numbers from the source that are missing or altered in the result.
+        public var missingNumbers: [String]
+        /// Sentence-length coefficient of variation (σ / μ) of the result.
+        public var burstinessCV: Double
+
+        public var allNumbersPreserved: Bool { missingNumbers.isEmpty }
+    }
+
+    public static func verify(source: String, result: String) -> Verification {
+        let distinctSourceNumbers = Set(extractNumbers(source).map(canonicalNumber)).filter { !$0.isEmpty }.count
+        return Verification(
+            sourceNumberCount: distinctSourceNumbers,
+            missingNumbers: missingNumbers(from: source, in: result),
+            burstinessCV: sentenceBurstinessCV(result)
+        )
     }
 }

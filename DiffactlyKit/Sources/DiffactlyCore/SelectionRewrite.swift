@@ -12,10 +12,26 @@ public struct SelectionRewriteSpec: Sendable {
     /// The other side of the comparison, offered as background when set.
     public var otherText: String?
     public var otherTitle: String
+    /// The part of the other side that lines up with the passage (see
+    /// `PassageMatch`). When set, `passageWeight` decides how much of the
+    /// result comes from it.
+    public var counterpart: String?
+    /// The user marked `counterpart` by hand in the other version (instead of
+    /// it being matched line by line), so it's exactly the text to draw on.
+    public var counterpartIsMarked: Bool
+    /// Other parts of this same document the user marked to draw on for the
+    /// passage (outside the passage itself).
+    public var markedExcerpts: [String]
+    /// Share of the result that comes from the selected passage when
+    /// `counterpart` is set: 1 = rewrite the passage and use the counterpart
+    /// only as background, 0.5 = an even merge, 0 = follow the counterpart.
+    public var passageWeight: Double
     public var strength: RewriteStrength
     public var instructions: String
     public var extraNotes: String
     public var avoidAITells: Bool
+    /// Treat the document as scholarly writing (see `AcademicHumanizer`).
+    public var academic: Bool
     public var references: [ReferenceDocument]
     /// nil detects the markup from the document.
     public var markup: TextMarkup?
@@ -23,15 +39,23 @@ public struct SelectionRewriteSpec: Sendable {
     public init(
         documentText: String, documentTitle: String = "Changed", fileName: String? = nil,
         range: NSRange, otherText: String? = nil, otherTitle: String = "Original",
+        counterpart: String? = nil, counterpartIsMarked: Bool = false, markedExcerpts: [String] = [],
+        passageWeight: Double = 1,
         strength: RewriteStrength = .moderate, instructions: String, extraNotes: String = "",
-        avoidAITells: Bool = true, references: [ReferenceDocument] = [], markup: TextMarkup? = nil
+        avoidAITells: Bool = true, references: [ReferenceDocument] = [], markup: TextMarkup? = nil,
+        academic: Bool = false
     ) {
+        self.academic = academic
         self.documentText = documentText
         self.documentTitle = documentTitle
         self.fileName = fileName
         self.range = range
         self.otherText = otherText
         self.otherTitle = otherTitle
+        self.counterpart = counterpart
+        self.counterpartIsMarked = counterpartIsMarked
+        self.markedExcerpts = markedExcerpts
+        self.passageWeight = min(1, max(0, passageWeight))
         self.strength = strength
         self.instructions = instructions
         self.extraNotes = extraNotes
@@ -48,6 +72,28 @@ public struct SelectionRewriteSpec: Sendable {
     }
 
     var resolvedMarkup: TextMarkup { markup ?? TextMarkup.detect(documentText, fileName: fileName) }
+
+    /// The counterpart, when there is one worth showing (not blank and not
+    /// just the passage again).
+    public var usableCounterpart: String? {
+        guard let counterpart else { return nil }
+        let c = counterpart.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !c.isEmpty, c != passage.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return counterpart
+    }
+
+    /// The blend actually leans on the other version (rather than only
+    /// reading it as background).
+    public var blendsCounterpart: Bool { usableCounterpart != nil && passageWeight < 0.9 }
+
+    /// The marked excerpts worth sending: not blank and not the passage again.
+    public var usableExcerpts: [String] {
+        let passage = passage.trimmingCharacters(in: .whitespacesAndNewlines)
+        return markedExcerpts.filter {
+            let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !t.isEmpty && t != passage
+        }
+    }
 }
 
 public enum SelectionRewrite {
@@ -70,8 +116,18 @@ public enum SelectionRewrite {
     }
 
     /// Second pass for a passage: facts, fit with the surrounding text, tells.
-    public static func auditMessages(draft: String, spec: SelectionRewriteSpec, flagged: [String] = []) -> RewritePrompt.Messages {
-        let flaggedNote = flagged.isEmpty ? "" : "\n\nAn automatic scan flagged these in the draft; rework each sentence that contains one (don't just swap the word for a synonym): " + flagged.prefix(20).map { "“\($0)”" }.joined(separator: ", ") + "."
+    public static func auditMessages(
+        draft: String,
+        spec: SelectionRewriteSpec,
+        flagged: [String] = [],
+        missingNumbers: [String] = []
+    ) -> RewritePrompt.Messages {
+        let missingNote = missingNumbers.isEmpty
+            ? ""
+            : "\n\nCRITICAL — An automatic check found that these numbers from the original passage were dropped or altered in the draft; restore each one in its exact numerical form and meaning: " + missingNumbers.prefix(20).map { "“\($0)”" }.joined(separator: ", ") + "."
+        let flaggedNote = flagged.isEmpty
+            ? ""
+            : "\n\nAn automatic scan flagged these in the draft; rework each sentence that contains one (don't just swap the word for a synonym): " + flagged.prefix(20).map { "“\($0)”" }.joined(separator: ", ") + "."
         let user = """
         \(contextBlock(spec))
 
@@ -80,10 +136,10 @@ public enum SelectionRewrite {
         \(draft)
         </draft>
 
-        Check the draft in three steps, silently:
-        1. Did it drop or change any fact, name, number, date, quote, citation or claim from the original passage? Restore anything lost. Remove anything invented.
+        Check the draft in \(spec.academic ? "four" : "three") steps, silently:
+        1. Did it drop or change any fact, name, number, percentage, currency, date, quote, citation or claim from the original passage\(spec.blendsCounterpart ? " (or from the matching part of “\(spec.otherTitle)”, where the blend calls for it)" : "")? Restore anything lost in its exact numerical or factual form. Remove anything invented.\(missingNote)
         2. Does it fit where it goes? It must join up with the text just before and just after the markers, use the document's terms, notation and tense, and not repeat what the surrounding text already says.
-        3. Read it as a sharp human editor. Rewrite any sentence that still sounds machine-written: "not X but Y" contrasts, summary closers, groups of three, em dashes, -ing tails, "serves as" instead of "is", stacked hedges.\(flaggedNote)
+        3. Read it as a sharp human editor. Rewrite any sentence that still sounds machine-written: "not X but Y" contrasts, summary closers, groups of three, em dashes, -ing tails, "serves as" instead of "is", stacked hedges, and uniform sentence lengths.\(flaggedNote)\(spec.academic ? "\n" + AcademicHumanizer.auditStep(4) : "")
 
         Then output only the corrected replacement for the passage, nothing else.
         """
@@ -96,6 +152,9 @@ public enum SelectionRewrite {
         var parts: [String] = [RewritePrompt.role]
         let task = describePlaceholders(spec.instructions.trimmingCharacters(in: .whitespacesAndNewlines))
         if !task.isEmpty { parts.append("## Task\n" + task + "\nApply this to the marked passage only.") }
+        let keepPoints = spec.blendsCounterpart
+            ? "- Keep every substantive point the blend calls for (see “Blending with the other version”); cut only empty wording, not claims."
+            : "- Keep every substantive point the passage makes; cut only empty wording, not claims. Stay within about a third of its length unless the task says otherwise."
         parts.append("""
         ## Rewriting one passage in context
         You are rewriting one passage inside a longer document, not the whole document. You get the document with the passage marked between \(startMarker) and \(endMarker).
@@ -103,14 +162,20 @@ public enum SelectionRewrite {
         - If the passage starts or ends in the middle of a sentence, start and end your replacement at the same point, so it joins up grammatically with the words around it.
         - Stay consistent with the rest of the document\(spec.references.isEmpty ? "" : " and the reference documents"): the same terms, notation, abbreviations (an abbreviation defined earlier stays abbreviated), tense, person, spelling variant and citation style.
         - Don't repeat a point the surrounding text already makes, and don't introduce something the text after the passage introduces.
-        - Keep every substantive point the passage makes; cut only empty wording, not claims. Stay within about a third of its length unless the task says otherwise.
+        \(keepPoints)
         """)
+        if let blend = blendGuidance(spec) { parts.append(blend) }
         parts.append("## How much to change\n" + spec.strength.instruction)
-        parts.append(RewritePrompt.fidelityRules.replacingOccurrences(of: "source text", with: "passage"))
+        parts.append(RewritePrompt.fidelityRules.replacingOccurrences(
+            of: "source text",
+            with: spec.blendsCounterpart ? "passage or the matching part of the other version" : "passage"))
         let markup = spec.resolvedMarkup
         if let rules = markup.rules { parts.append(rules) }
         if spec.avoidAITells {
             parts.append(RewritePrompt.aiTellGuidance(sourcesUseDashes: markup.usesEmDashes(spec.passage), markup: markup))
+        }
+        if spec.academic {
+            parts.append(AcademicHumanizer.guidance(strength: spec.strength, markup: markup, withTellGuidance: spec.avoidAITells))
         }
         let notes = spec.extraNotes.trimmingCharacters(in: .whitespacesAndNewlines)
         if !notes.isEmpty { parts.append("## Extra instructions from the user\n" + notes) }
@@ -120,6 +185,38 @@ public enum SelectionRewrite {
         - Keep the passage's formatting: line breaks, paragraph breaks, list markers and markup stay as they are unless the task says otherwise.
         """)
         return parts.joined(separator: "\n\n")
+    }
+
+    /// How to combine the passage with the matching part of the other
+    /// version; nil when there is nothing to combine.
+    static func blendGuidance(_ spec: SelectionRewriteSpec) -> String? {
+        guard spec.usableCounterpart != nil else { return nil }
+        let other = "“\(spec.otherTitle)”"
+        let what = spec.counterpartIsMarked ? "the text the user highlighted in \(other)" : "the matching part of \(other)"
+        let percent = Int((spec.passageWeight * 100).rounded())
+        let base: String
+        switch spec.passageWeight {
+        case 0.9...:
+            base = "Base the replacement on the marked passage. \(what.prefix(1).uppercased() + what.dropFirst()) is background only: use it to check facts or to borrow a detail the passage lacks, not to copy its wording or structure."
+        case 0.65..<0.9:
+            base = "Use the marked passage as the base: keep its structure, order of ideas and voice. Bring in stronger phrasings and any details from \(what) that the passage is missing."
+        case 0.35..<0.65:
+            base = "Merge the marked passage and \(what) evenly. Where they cover the same point, keep whichever version is clearer and more natural, or combine the best of both. Include every distinct point from either exactly once."
+        case 0.1..<0.35:
+            base = "Use \(what) as the base: its structure, order of ideas and voice. Bring in stronger phrasings and any details from the marked passage that it is missing."
+        default:
+            base = "Follow \(what) closely: its content, structure and wording. Use the marked passage only for a fact or detail the other version lacks."
+        }
+        let mix = spec.passageWeight >= 0.9 ? "" : " Aim for roughly \(percent)% marked passage and \(100 - percent)% \(other)."
+        let source = spec.counterpartIsMarked
+            ? "You also get the text the user highlighted by hand in \(other) as what corresponds to this passage. They chose it themselves, so treat all of it as relevant (separate excerpts are joined with “[…]”)."
+            : "You also get the part of \(other) that lines up with the marked passage in the user's comparison. It is cut along line boundaries, so it may cover a little more or less than the passage: use only what corresponds to the marked passage."
+        return """
+        ## Blending with the other version
+        \(source)
+        \(base)\(mix)
+        Whatever the blend, the result replaces the marked passage in “\(spec.documentTitle)”, so it must fit the text around the markers. Never repeat a point because it appears in both versions. If they contradict each other on a fact, follow the one with more weight.
+        """
     }
 
     /// The other version (optional), the marked document and the passage again.
@@ -148,6 +245,21 @@ public enum SelectionRewrite {
         \(spec.passage)
         </passage>
         """)
+        if let counterpart = spec.usableCounterpart {
+            parts.append("""
+            \(spec.counterpartIsMarked ? "The text the user highlighted in “\(spec.otherTitle)” for this passage:" : "The part of “\(spec.otherTitle)” that matches this passage:")
+            <other_passage title="\(ReferenceContext.attributeSafe(spec.otherTitle))">
+            \(counterpart)
+            </other_passage>
+            """)
+        }
+        let excerpts = spec.usableExcerpts
+        if !excerpts.isEmpty {
+            parts.append("""
+            The user also highlighted these other parts of “\(spec.documentTitle)” as material to draw on for this passage (don't edit them; they stay where they are):
+            \(excerpts.map { "<highlighted_excerpt>\n\($0)\n</highlighted_excerpt>" }.joined(separator: "\n"))
+            """)
+        }
         return parts.joined(separator: "\n\n")
     }
 

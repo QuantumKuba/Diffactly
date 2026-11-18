@@ -8,6 +8,9 @@ struct ContentView: View {
     @State private var showIgnoreRules = false
     /// The tab's custom name survives relaunches along with the window.
     @SceneStorage("tabTitle") private var storedTabTitle = ""
+    /// The saved session tab this window shows, so it shows it again after a relaunch.
+    @SceneStorage("sessionTab") private var storedSessionTab = ""
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,15 +18,18 @@ struct ContentView: View {
                 switch document.mode {
                 case .edit:
                     HStack(spacing: 0) {
-                        EditorPane(document: document, side: .left)
+                        EditorPane(document: document, session: rewrite, side: .left)
                         Divider()
-                        EditorPane(document: document, side: .right)
+                        EditorPane(document: document, session: rewrite, side: .right)
                     }
                 case .split, .unified:
                     DiffOutputView(document: document, layout: document.mode)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let anchor = document.pendingLink { PendingLinkBar(document: document, anchor: anchor) }
+            }
             .overlay(alignment: .topTrailing) {
                 if document.search.isPresented {
                     SearchBarView(document: document)
@@ -37,6 +43,9 @@ struct ContentView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.18), value: document.search.isPresented)
+            .safeAreaInset(edge: .trailing, spacing: 0) {
+                if document.isShowingComments { CommentsSidebar(document: document) }
+            }
             Divider()
             StatusBar(document: document)
         }
@@ -50,13 +59,21 @@ struct ContentView: View {
         .navigationSubtitle(subtitle)
         .focusedSceneObject(document)
         .background(WindowObserver(onAttach: WindowTabs.adopt) { window in
+            connect()
             DocumentRouter.shared.register(document, window: window)
             WindowTabs.showTabBar(in: window)
+            SessionController.shared.documentAppeared(document, window: window, restoring: storedSessionTab)
         })
         .sheet(isPresented: $showIgnoreRules) { IgnoreRulesSheet(document: document) }
         .sheet(isPresented: $document.isRenamingTab) { RenameTabSheet(document: document) }
         .sheet(isPresented: $document.isShowingAI) { RewriteSheet(document: document, session: rewrite) }
-        .onAppear { if document.tabTitle.isEmpty { document.tabTitle = storedTabTitle } }
+        .sheet(item: $document.comparedSuggestion) { SuggestionCompareSheet(document: document, suggestion: $0) }
+        .onAppear {
+            if document.tabTitle.isEmpty { document.tabTitle = storedTabTitle }
+            connect()
+        }
+        .onChange(of: document.sessionMarker) { _, marker in storedSessionTab = marker }
+        .onChange(of: document.projectFolder, initial: true) { _, folder in rewrite.references.setProjectFolder(folder) }
         .onChange(of: document.tabTitle) { _, title in storedTabTitle = title }
         .alert("Couldn’t open file", isPresented: Binding(get: { document.errorMessage != nil }, set: { if !$0 { document.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
@@ -65,10 +82,56 @@ struct ContentView: View {
         }
     }
 
-    /// The open files, unless the title already shows them.
+    /// Ties the window's AI sheet to its document. Done before the window
+    /// reports itself too, since a saved session restores both together.
+    private func connect() {
+        guard document.rewriteSession !== rewrite else { return }
+        rewrite.references.owner = document
+        document.rewriteSession = rewrite
+        document.suggestionHandler = rewrite.suggestionHandler(for: document)
+        SessionController.shared.provide(openWindow)
+    }
+
+    /// The session and the open files (unless the title already shows them).
     private var subtitle: String {
-        guard let files = document.fileSummary, files != document.displayTabTitle else { return "" }
-        return files
+        var parts: [String] = []
+        if let session = document.projectSession { parts.append(session.name) }
+        if let files = document.fileSummary, files != document.displayTabTitle { parts.append(files) }
+        return parts.joined(separator: " — ")
+    }
+}
+
+// MARK: - Linking
+
+/// Shown while one end of a link is picked: what's picked, and what to do
+/// next to finish it.
+private struct PendingLinkBar: View {
+    @ObservedObject var document: DiffDocument
+    let anchor: PendingLinkEnd
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "link").foregroundStyle(DiffPalette.link)
+            Text("Linking “\(snippet)” in \(document.title(for: anchor.side)). Select the text that says the same in \(document.title(for: anchor.side.other)), then press ⌥⌘L.")
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            if document.mode != .edit {
+                Button("Show Editors") { document.mode = .edit }
+            }
+            Button("Cancel") { document.cancelPendingLink() }
+        }
+        .font(.callout)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(DiffPalette.link.opacity(0.10))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var snippet: String {
+        let text = anchor.text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+        return text.count > 48 ? String(text.prefix(46)) + "…" : text
     }
 }
 
@@ -76,6 +139,8 @@ struct ContentView: View {
 
 struct EditorPane: View {
     @ObservedObject var document: DiffDocument
+    /// Not observed: the editor only needs its settings when asking for a suggestion.
+    let session: RewriteSession
     let side: DiffDocument.Side
 
     var body: some View {
@@ -144,6 +209,37 @@ struct EditorPane: View {
                     document.updateSelection(side: side, selectedText: selected, range: range)
                     document.showAI(.rewrite, selection: true)
                 },
+                onSuggestRewrite: { selected, range in
+                    document.updateSelection(side: side, selectedText: selected, range: range)
+                    session.suggest(side: side, range: range, text: selected, document: document, store: .shared,
+                                    showingOptions: RewriteSession.showsOptionsFirst)
+                },
+                onSuggestRewriteWithOptions: { selected, range in
+                    document.updateSelection(side: side, selectedText: selected, range: range)
+                    session.suggest(side: side, range: range, text: selected, document: document, store: .shared, showingOptions: true)
+                },
+                quickRewriteTitle: RewriteSession.currentPromptName,
+                suggestionMarks: document.suggestionMarks(for: side),
+                presentedSuggestion: document.presentedSuggestion,
+                onPresentSuggestion: { id, pinned in document.presentSuggestion(id, pinned: pinned) },
+                onSuggestionCardClosed: { id in document.suggestionCardClosed(id) },
+                suggestionCard: { id in AnyView(SuggestionCardHost(document: document, session: session, id: id)) },
+                sourceMarks: document.sourceMarks(for: side).map(\.range),
+                totalSourceMarks: document.sourceMarks.count,
+                onSourceMarkAction: { action in document.handle(action, on: side) },
+                linkMarks: document.linkMarks(for: side),
+                isLinkPendingOnOtherSide: document.pendingLink?.side == side.other,
+                otherSideTitle: document.title(for: side.other),
+                onLinkAction: { action in document.handle(action, on: side) },
+                onLinkHover: { id in
+                    if id != nil || document.hoveredLinkID != nil { document.hoveredLinkID = id }
+                },
+                commentMarks: document.commentMarks(for: side),
+                presentedComment: document.presentedComment,
+                onPresentComment: { id, pinned in document.presentComment(id, pinned: pinned) },
+                onCommentClosed: { id in document.commentCardClosed(id) },
+                commentCard: { id in AnyView(CommentCardHost(document: document, id: id)) },
+                onAddComment: { _, range in document.addComment(side: side, range: range) },
                 onFocus: { document.activeSide = side },
                 onFind: { document.openSearch(focusedSide: side) },
                 onFindNext: { document.findNext() },
@@ -204,6 +300,15 @@ struct StatusBar: View {
                 Label("Ignored differences hidden", systemImage: "eye.slash").foregroundStyle(.tertiary)
             }
             Spacer(minLength: 8)
+            if !document.suggestions.isEmpty {
+                suggestionsMenu(detail)
+            }
+            if !document.sourceMarks.isEmpty {
+                sourceMarksMenu(detail)
+            }
+            if !document.comments.isEmpty {
+                CommentsStatusItem(document: document, compact: detail == .minimal)
+            }
             if document.isComputing {
                 ProgressView().controlSize(.small)
             }
@@ -219,6 +324,61 @@ struct StatusBar: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    // MARK: AI suggestions
+
+    /// "✦ 2 suggestions": jump between them, or accept / reject them all.
+    private func suggestionsMenu(_ detail: Detail) -> some View {
+        let all = document.suggestions
+        let ready = all.filter(\.isReady).count
+        let running = all.filter { $0.status.isRunning }.count
+        let title = detail == .minimal ? "\(all.count)" : "\(all.count) suggestion\(all.count == 1 ? "" : "s")"
+        return Menu {
+            Button("Show Next Suggestion") { document.presentNextSuggestion() }
+            Divider()
+            Button("Accept All Ready (\(ready))") { document.acceptAllSuggestions() }
+                .disabled(ready == 0)
+            Button("Reject All", role: .destructive) { document.rejectAllSuggestions() }
+        } label: {
+            Label(title, systemImage: running > 0 ? "sparkles" : "sparkle")
+                .foregroundStyle(DiffPalette.suggestion)
+        } primaryAction: {
+            document.presentNextSuggestion()
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(running > 0
+              ? "AI suggestions: \(running) being written, \(ready) ready to review. Click to show the next."
+              : "AI suggestions waiting for review. Click to show the next one, or use the menu to accept or reject them all.")
+    }
+
+    // MARK: AI source highlights
+
+    /// "⌇ 2 highlighted": jump between them, or clear them.
+    private func sourceMarksMenu(_ detail: Detail) -> some View {
+        let count = document.sourceMarks.count
+        let title = detail == .minimal ? "\(count)" : "\(count) highlighted"
+        return Menu {
+            Button("Show Next Highlight") { document.revealNextSourceMark() }
+            Divider()
+            ForEach([DiffDocument.Side.left, .right], id: \.self) { side in
+                let n = document.sourceMarks(for: side).count
+                Button("Clear \(document.title(for: side)) Highlights (\(n))") { document.clearSourceMarks(on: side) }
+                    .disabled(n == 0)
+            }
+            Button("Clear All Highlights", role: .destructive) { document.clearSourceMarks() }
+        } label: {
+            Label(title, systemImage: "highlighter")
+                .foregroundStyle(DiffPalette.sourceMark)
+        } primaryAction: {
+            document.revealNextSourceMark()
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Text highlighted as a source for AI rewrites: a passage rewrite in one editor takes the highlighted text in the other as its counterpart. Click to show the next one.")
     }
 
     // MARK: Word counts

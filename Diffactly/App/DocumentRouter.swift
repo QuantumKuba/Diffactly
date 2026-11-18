@@ -3,8 +3,23 @@ import AppKit
 
 /// Receives files opened from Finder, the Dock or `diffactly --gui`.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { TabRenaming.install() }
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
-        Task { @MainActor in DocumentRouter.shared.open(urls) }
+        Task { @MainActor in
+            let sessions = urls.filter(SessionController.isSession)
+            for url in sessions { SessionController.shared.open(url) }
+            let files = urls.filter { !SessionController.isSession($0) }
+            if !files.isEmpty { DocumentRouter.shared.open(files) }
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Sessions are saved as they change; this catches the last few seconds.
+        MainActor.assumeIsolated { SessionController.shared.saveAllBeforeQuitting() }
+        return .terminateNow
     }
 }
 
@@ -37,6 +52,16 @@ final class DocumentRouter {
     /// Every open comparison window's document (one per tab).
     var documents: [DiffDocument] {
         entries.compactMap { $0.window == nil ? nil : $0.document }
+    }
+
+    /// The document shown in a comparison window (a tab).
+    func document(for window: NSWindow) -> DiffDocument? {
+        entries.first { $0.window === window }?.document
+    }
+
+    /// The comparison window showing a document (nil once it has closed).
+    func window(for document: DiffDocument) -> NSWindow? {
+        entries.first { $0.document === document }?.window
     }
 
     func document(_ id: ObjectIdentifier) -> DiffDocument? {

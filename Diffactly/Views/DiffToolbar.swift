@@ -8,6 +8,10 @@ struct DiffToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
+            SessionMenu(document: document)
+        }
+
+        ToolbarItem(placement: .navigation) {
             Picker("View", selection: $document.mode) {
                 ForEach(DiffDocument.Mode.allCases) { mode in
                     Label(mode.title, systemImage: mode.systemImage).tag(mode)
@@ -45,16 +49,24 @@ struct DiffToolbar: ToolbarContent {
             .help("Transform both texts (undoable)")
 
             Menu {
-                Button("Rewrite with AI…") { document.showAI(.rewrite) }
-                Button("Rewrite Selection with AI…") { document.showAI(.rewrite, selection: true) }
+                Button("\(RewriteSession.currentPromptName) Selection") { document.suggestRewriteForSelection() }
                     .disabled(document.selection == nil)
+                Button("\(RewriteSession.currentPromptName) Selection with Options…") { document.suggestRewriteForSelection(withOptions: true) }
+                    .disabled(document.selection == nil)
+                Button(document.selection == nil ? "Rewrite with AI…" : "Rewrite Selection with AI…") { document.showAI(.rewrite) }
                 Button("Summarize Differences with AI…") { document.showAI(.summary) }
+                if !document.suggestions.isEmpty {
+                    Divider()
+                    Button("Show Next Suggestion") { document.presentNextSuggestion() }
+                    Button("Accept All Ready Suggestions") { document.acceptAllSuggestions() }
+                    Button("Reject All Suggestions") { document.rejectAllSuggestions() }
+                }
             } label: {
                 Label("AI", systemImage: "sparkles")
             } primaryAction: {
                 document.showAI(.rewrite)
             }
-            .help("Humanize, paraphrase or merge the texts (⌥⌘R), rewrite just the selection (⌥⌘E), or summarize the main differences (⇧⌥⌘R)")
+            .help("With text selected: suggest a rewrite of just the selection to accept or reject (⌥⌘E; ⌥⇧⌘E to choose its settings first), or open the AI panel on it (⌥⌘R). Without: humanize, paraphrase or merge whole texts, or summarize the differences (⇧⌥⌘R).")
 
             Button {
                 document.swapSides()
@@ -94,6 +106,44 @@ struct DiffToolbar: ToolbarContent {
     private var optionsActive: Bool {
         let o = document.options
         return o.ignoreWhitespace || o.ignoreCase || o.ignoreQuotes || o.ignoreDashes || !o.ignoredStrings.isEmpty
+    }
+}
+
+/// Toolbar menu for sessions: open one (or a recent one), save this window's
+/// tabs as one, or find the current one in Finder. Clicking the button itself
+/// shows the open panel.
+struct SessionMenu: View {
+    @ObservedObject var document: DiffDocument
+    @ObservedObject private var sessions = SessionController.shared
+
+    var body: some View {
+        Menu {
+            Button("Open Session…") { sessions.showOpenPanel() }
+            Section("Recent Sessions") {
+                if sessions.recents.isEmpty {
+                    Text("No Recent Sessions")
+                } else {
+                    ForEach(sessions.recents) { recent in
+                        Button(sessions.menuTitle(for: recent)) { sessions.openRecent(recent) }
+                    }
+                }
+            }
+            Divider()
+            Button(document.projectSession == nil ? "Save Session…" : "Save Session") { sessions.save(from: document) }
+            Button("Save Session As…") { sessions.saveAs(from: document) }
+            Button("Show Session in Finder") { sessions.showInFinder(document) }
+                .disabled(document.projectSession == nil)
+            if !sessions.recents.isEmpty {
+                Divider()
+                Button("Clear Recent Sessions") { sessions.clearRecents() }
+            }
+        } label: {
+            Label(document.projectSession?.name ?? "Sessions", systemImage: "square.stack.3d.up")
+        } primaryAction: {
+            sessions.showOpenPanel()
+        }
+        .help(document.projectSession.map { "Session “\($0.name)”: open, save or switch sessions (⌥⌘O opens one)" }
+              ?? "Open a saved session or a recent one, or save this window’s tabs as a session (⌥⌘O, ⌘S)")
     }
 }
 
@@ -192,15 +242,37 @@ struct DiffCommands: Commands {
             }
             Button("Swap Sides") { document?.swapSides() }
                 .keyboardShortcut("s", modifiers: [.command, .option])
-            Button("Rewrite with AI…") { document?.showAI(.rewrite) }
-                .keyboardShortcut("r", modifiers: [.command, .option])
-                .disabled(document == nil)
-            Button("Rewrite Selection with AI…") { document?.showAI(.rewrite, selection: true) }
+            Button("\(RewriteSession.currentPromptName) Selection") { document?.suggestRewriteForSelection() }
                 .keyboardShortcut("e", modifiers: [.command, .option])
                 .disabled(document?.selection == nil)
+            Button("\(RewriteSession.currentPromptName) Selection with Options…") { document?.suggestRewriteForSelection(withOptions: true) }
+                .keyboardShortcut("e", modifiers: [.command, .option, .shift])
+                .disabled(document?.selection == nil)
+            Button(document?.selection == nil ? "Rewrite with AI…" : "Rewrite Selection with AI…") { document?.showAI(.rewrite) }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+                .disabled(document == nil)
             Button("Summarize Differences with AI…") { document?.showAI(.summary) }
                 .keyboardShortcut("r", modifiers: [.command, .option, .shift])
                 .disabled(document == nil)
+            Button(document?.selectionIsSourceMarked == true ? "Remove AI Source Highlight" : "Use Selection as AI Source") { document?.toggleSourceMarkForSelection() }
+                .keyboardShortcut("u", modifiers: [.command, .option])
+                .disabled(document?.selection == nil)
+            Button("Clear AI Source Highlights") { document?.clearSourceMarks() }
+                .disabled(document?.sourceMarks.isEmpty != false)
+            Button(document?.pendingLink == nil ? "Link Selection to Other Side" : "Link to Picked Text") { document?.linkSelection() }
+                .keyboardShortcut("l", modifiers: [.command, .option])
+                .disabled(document?.selection == nil)
+            Button("Remove All Links") { document?.removeAllLinks() }
+                .disabled(document?.links.isEmpty != false)
+            Button("Forget AI Rewrite History") { document?.forgetAllRewrites() }
+                .disabled(document?.acceptedRewrites.isEmpty != false)
+            Button("Show Next AI Suggestion") { document?.presentNextSuggestion() }
+                .keyboardShortcut("'", modifiers: [.command, .option])
+                .disabled(document?.suggestions.isEmpty != false)
+            Button("Accept All AI Suggestions") { document?.acceptAllSuggestions() }
+                .disabled(document?.suggestions.contains(where: \.isReady) != true)
+            Button("Reject All AI Suggestions") { document?.rejectAllSuggestions() }
+                .disabled(document?.suggestions.isEmpty != false)
             Divider()
             Button("Clear \(document.map { $0.title(for: $0.sideToClear) } ?? "Original")") {
                 guard let document else { return }

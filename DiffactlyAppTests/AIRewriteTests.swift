@@ -157,6 +157,104 @@ final class AIRewriteTests: XCTestCase {
         s.includeOtherSide = true
     }
 
+    func testAcademicOptionLayersOntoAnyPrompt() {
+        let doc = document(left: "", right: "Before. Chosen part. After.")
+        let s = session(for: doc, passage: "Chosen part.", side: .right, result: "x")
+        let store = AIStore()
+        let (savedPrompt, savedAcademic, savedSource) = (s.promptID, s.academicVoice, s.source)
+        defer { s.promptID = savedPrompt; s.academicVoice = savedAcademic; s.source = savedSource }
+        s.source = .right
+
+        // Paraphrase on its own, then with the academic humanizer.
+        s.promptID = "builtin.paraphrase"
+        s.academicVoice = false
+        XCTAssertFalse(s.rewriteSpec(document: doc, store: store).academic)
+        XCTAssertEqual(s.styleName(in: store), "Paraphrase")
+        s.academicVoice = true
+        let combined = RewritePrompt.messages(for: s.rewriteSpec(document: doc, store: store)).system
+        XCTAssertTrue(combined.contains("Paraphrase the text:"))
+        XCTAssertTrue(combined.contains("## Academic voice"))
+        XCTAssertTrue(s.selectionSpec(s.passage!, document: doc, store: store).academic)
+        XCTAssertEqual(s.styleName(in: store), "Paraphrase + Academic")
+
+        // The Academic Humanize prompt applies the rules whatever the option says.
+        s.academicVoice = false
+        s.promptID = RewritePreset.academicID
+        XCTAssertTrue(s.appliesAcademic)
+        XCTAssertTrue(s.rewriteSpec(document: doc, store: store).academic)
+        XCTAssertEqual(s.styleName(in: store), "Academic Humanize")
+    }
+
+    // MARK: Versions of a result
+
+    func testAskingAgainForTheSamePassageAddsVersions() {
+        let doc = document(left: "", right: "One. Target sentence. Two.")
+        let s = session(for: doc, passage: "Target sentence.", side: .right, result: "First go.")
+        s.setResultForTesting("Second go.")
+        XCTAssertEqual(s.versions(for: .rewrite).map(\.text), ["First go.", "Second go."])
+        XCTAssertEqual(s.shownVersionNumber(for: .rewrite), 2)
+        XCTAssertEqual(s.output, "Second go.")
+
+        s.restore(s.versions(for: .rewrite)[0])
+        XCTAssertEqual(s.output, "First go.")
+        XCTAssertEqual(s.shownVersionNumber(for: .rewrite), 1)
+        XCTAssertTrue(s.applyPassage(in: doc, inPlace: true), "Use works on the version on show")
+        XCTAssertEqual(doc.rightText, "One. First go. Two.")
+    }
+
+    func testEditsStayWithTheirVersion() {
+        let doc = document(left: "", right: "One. Target sentence. Two.")
+        let s = session(for: doc, passage: "Target sentence.", side: .right, result: "First go.")
+        s.setResultForTesting("Second go.")
+        s.output = "Second go, edited."
+        s.restore(s.versions(for: .rewrite)[0])
+        XCTAssertEqual(s.output, "First go.")
+        s.restore(s.versions(for: .rewrite)[1])
+        XCTAssertEqual(s.output, "Second go, edited.")
+    }
+
+    func testEachTargetHasItsOwnVersions() {
+        let doc = document(left: "Left text.", right: "One. Target sentence. Two.")
+        let s = session(for: doc, passage: "Target sentence.", side: .right, result: "Passage 1.")
+        s.setResultForTesting("Passage 2.")
+        let savedSource = s.source
+        defer { s.source = savedSource }
+        s.target = .left
+        s.setResultForTesting("Whole left.")
+        XCTAssertEqual(s.versions(for: .rewrite).map(\.text), ["Whole left."], "a new series starts at V1")
+        let others = s.otherResults(for: .rewrite)
+        XCTAssertEqual(others.map(\.item.text), ["Passage 2."], "the latest of the other series")
+        XCTAssertEqual(others.first?.count, 2)
+
+        // Going back to the passage brings its versions back.
+        s.restore(others[0].item)
+        XCTAssertEqual(s.versions(for: .rewrite).map(\.text), ["Passage 1.", "Passage 2."])
+        XCTAssertEqual(s.shownVersionNumber(for: .rewrite), 2)
+        XCTAssertNotNil(s.outputPassage)
+        XCTAssertEqual(s.otherResults(for: .rewrite).map(\.item.text), ["Whole left."])
+    }
+
+    func testSummariesAreVersionedToo() {
+        let s = RewriteSession()
+        s.setSummaryForTesting("**In short:** one", label: "Brief summary")
+        s.setSummaryForTesting("**In short:** two", label: "Detailed summary")
+        XCTAssertEqual(s.versions(for: .summary).map(\.label), ["Brief summary", "Detailed summary"])
+        XCTAssertTrue(s.versions(for: .rewrite).isEmpty, "rewrites keep their own")
+        s.restore(s.versions(for: .summary)[0])
+        XCTAssertEqual(s.summary, "**In short:** one")
+        XCTAssertEqual(s.task, .summary)
+    }
+
+    func testVersionsPerSeriesAreCapped() {
+        let doc = document(left: "", right: "One. Target sentence. Two.")
+        let s = session(for: doc, passage: "Target sentence.", side: .right, result: "Go 1")
+        for i in 2...(RewriteSession.versionLimit + 2) { s.setResultForTesting("Go \(i)") }
+        let versions = s.versions(for: .rewrite)
+        XCTAssertEqual(versions.count, RewriteSession.versionLimit)
+        XCTAssertEqual(versions.first?.text, "Go 3")
+        XCTAssertEqual(s.shownVersionNumber(for: .rewrite), RewriteSession.versionLimit)
+    }
+
     // MARK: Reference documents
 
     func testLoadingAPaperFolder() throws {

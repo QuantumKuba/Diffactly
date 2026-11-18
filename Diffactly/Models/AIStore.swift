@@ -54,13 +54,17 @@ struct RewritePreset: Codable, Identifiable, Hashable {
     var isBuiltIn: Bool = false
 
     static let humanizeID = "builtin.humanize"
+    static let academicID = "builtin.academic"
 
     static let builtIns: [RewritePreset] = [
         RewritePreset(id: humanizeID, name: "Humanize", instructions: """
-            Rewrite the text so it reads as naturally human-written. Remove the signs of AI writing (stock vocabulary, formulaic sentence shapes, filler and chatbot residue) while keeping the meaning, the facts and the writer's voice.
+            Rewrite the text so it reads as naturally human-written. Strip the signs of AI writing (stock vocabulary, formulaic contrasts, throat-clearing openers, participial -ing tails, summary endings, and chatbot residue) and vary sentence lengths and openings naturally, while keeping every fact, number, and nuance in the writer's voice.
+            """, isBuiltIn: true),
+        RewritePreset(id: academicID, name: "Academic Humanize", instructions: """
+            Edit this scholarly text (a paper, thesis, rebuttal or funding proposal) so it reads as careful human academic writing. Strip the signs of AI writing and academic padding, match every claim to the evidence the text gives for it, and keep the precise, neutral register, the calibrated hedging, and every number, equation and citation exactly as they are. Follow the “Academic voice” rules below.
             """, isBuiltIn: true),
         RewritePreset(id: "builtin.paraphrase", name: "Paraphrase", instructions: """
-            Paraphrase the text: express the same content in clearly different wording and sentence structure, so the result is not a near-copy of the source, while every point and nuance stays exactly the same.
+            Paraphrase the text: express the same content in clearly different wording, clause order, and sentence structure, so the result is not a near-copy of the source, while every point, number, and nuance stays exactly the same.
             """, isBuiltIn: true),
         RewritePreset(id: "builtin.polish", name: "Polish", instructions: """
             Correct grammar, spelling, punctuation and awkward phrasing, and smooth the flow between sentences. Do not change the content, the structure or the tone.
@@ -92,15 +96,17 @@ final class AIStore: ObservableObject {
     /// Bumped when a key changes so views showing "key saved" refresh.
     @Published private(set) var keyRevision = 0
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private enum Keys {
         static let providers = "ai.providers"
         static let prompts = "ai.customPrompts"
     }
 
-    init() {
-        providers = Self.load([AIProvider].self, Keys.providers) ?? []
-        customPrompts = Self.load([RewritePreset].self, Keys.prompts) ?? []
+    /// - Parameter defaults: where providers and prompts are kept (tests pass a scratch suite).
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        providers = Self.load([AIProvider].self, Keys.providers, from: defaults) ?? []
+        customPrompts = Self.load([RewritePreset].self, Keys.prompts, from: defaults) ?? []
     }
 
     var allPrompts: [RewritePreset] { RewritePreset.builtIns + customPrompts }
@@ -204,8 +210,8 @@ final class AIStore: ObservableObject {
         if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: key) }
     }
 
-    private static func load<T: Decodable>(_ type: T.Type, _ key: String) -> T? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+    private static func load<T: Decodable>(_ type: T.Type, _ key: String, from defaults: UserDefaults) -> T? {
+        guard let data = defaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
     }
 }

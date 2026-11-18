@@ -49,6 +49,37 @@ final class AITellsTests: XCTestCase {
         XCTAssertEqual(report.emDashes, 3)
         XCTAssertGreaterThan(report.density, 0)
     }
+
+    func testNumberExtractionAndMissingNumbersGuard() {
+        let source = "In 2026, revenue rose 61.3% to $1,200 across 5 regions (see \\cite{smith2024} and https://example.com/v2/report)."
+        let nums = AITells.extractNumbers(source)
+        XCTAssertEqual(nums, ["2026", "61.3%", "$1,200", "5"])
+
+        // Preserved when formatting changes ($1,200 -> 1200, 61.3% -> 61.3 percent)
+        let faithful = "Across 5 regions in 2026, revenue climbed 61.3 percent to 1200 dollars."
+        XCTAssertTrue(AITells.missingNumbers(from: source, in: faithful).isEmpty)
+
+        // Flagged when rounded or dropped (61.3% -> 61%, 5 dropped)
+        let drifted = "In 2026, revenue climbed 61% to $1,200 across the regions."
+        XCTAssertEqual(AITells.missingNumbers(from: source, in: drifted), ["61.3%", "5"])
+    }
+
+    func testBurstinessCadence() {
+        let uniform = """
+        The first sentence has exactly nine words in total. \
+        The second sentence also has nine words in total. \
+        The third sentence again has nine words in total. \
+        The fourth sentence still has nine words in total.
+        """
+        let varied = """
+        Short opening. \
+        Then a much longer sentence follows that unpacks the entire mechanism in detail across several distinct clauses so the rhythm shifts. \
+        It works well. \
+        Finally, a medium-length sentence wraps up the point cleanly.
+        """
+        XCTAssertLessThan(AITells.sentenceBurstinessCV(uniform), 0.1)
+        XCTAssertGreaterThan(AITells.sentenceBurstinessCV(varied), 0.5)
+    }
 }
 
 final class RewritePromptTests: XCTestCase {
@@ -101,6 +132,82 @@ final class RewritePromptTests: XCTestCase {
         XCTAssertTrue(m.user.contains("“delve”, “pivotal”"))
         XCTAssertTrue(m.user.contains("<draft>\nWe delve.\n</draft>"))
         XCTAssertFalse(RewritePrompt.auditMessages(draft: "x", spec: spec()).user.contains("automatic scan"))
+    }
+
+    func testAuditMessagesIncludeMissingNumbers() {
+        let s = spec()
+        let m = RewritePrompt.auditMessages(draft: "Draft text.", spec: s, flagged: [], missingNumbers: ["61.3%", "2026"])
+        XCTAssertTrue(m.user.contains("“61.3%”, “2026”"))
+    }
+
+    // MARK: Academic humanizer
+
+    func testAcademicGuidanceIsOptIn() {
+        XCTAssertFalse(RewritePrompt.messages(for: spec()).system.contains("## Academic voice"))
+        var s = spec()
+        s.academic = true
+        let system = RewritePrompt.messages(for: s).system
+        XCTAssertTrue(system.contains("## Academic voice"))
+        XCTAssertTrue(system.contains("Never strengthen a hedge"))
+        XCTAssertTrue(system.contains("Funding proposals"))
+        XCTAssertTrue(system.contains("this section wins"), "it overrides the general tell list")
+        // It comes after the general tells and before the output rules.
+        let tells = system.range(of: "## Avoid the signs of AI writing")!
+        let academic = system.range(of: "## Academic voice")!
+        let output = system.range(of: "## Output")!
+        XCTAssertTrue(tells.lowerBound < academic.lowerBound && academic.lowerBound < output.lowerBound)
+    }
+
+    func testAcademicGuidanceStandsAloneWithoutTheTellList() {
+        var s = spec()
+        s.academic = true
+        s.avoidAITells = false
+        let system = RewritePrompt.messages(for: s).system
+        XCTAssertTrue(system.contains("## Academic voice"))
+        XCTAssertFalse(system.contains("this section wins"))
+    }
+
+    func testAcademicRestructuringFollowsStrength() {
+        var s = spec()
+        s.academic = true
+        s.strength = .light
+        XCTAssertFalse(RewritePrompt.messages(for: s).system.contains("Restructuring scholarly text"))
+        s.strength = .strong
+        let system = RewritePrompt.messages(for: s).system
+        XCTAssertTrue(system.contains("Restructuring scholarly text"))
+    }
+
+    func testAcademicDashRuleFollowsMarkup() {
+        let latex = AcademicHumanizer.guidance(strength: .moderate, markup: .latex)
+        XCTAssertTrue(latex.contains("--- in LaTeX"))
+        XCTAssertTrue(latex.contains("4--7"))
+        XCTAssertTrue(AcademicHumanizer.guidance(strength: .moderate).contains("4–7"))
+    }
+
+    func testAcademicAuditAddsAStep() {
+        var s = spec()
+        XCTAssertTrue(RewritePrompt.auditMessages(draft: "x", spec: s).user.contains("in two steps"))
+        s.academic = true
+        let user = RewritePrompt.auditMessages(draft: "x", spec: s).user
+        XCTAssertTrue(user.contains("in three steps"))
+        XCTAssertTrue(user.contains("3. Read it as a reviewer in the field."))
+    }
+
+    func testAcademicPhraseScan() {
+        let text = "In recent years, X has grown. This paves the way for Y. To the best of our knowledge, it Paves the Way."
+        XCTAssertEqual(AcademicHumanizer.flaggedPhrases(in: text), ["in recent years", "paves the way", "to the best of our knowledge"])
+        XCTAssertTrue(AcademicHumanizer.flaggedPhrases(in: "Accuracy rises by 4 points over the baseline (Table 2).").isEmpty)
+    }
+
+    func testStrengthLevelsAndTransparency() {
+        XCTAssertEqual(RewriteStrength.allCases, [.light, .moderate, .strong])
+        for strength in RewriteStrength.allCases {
+            XCTAssertFalse(strength.transparentSummary.isEmpty)
+            var s = spec()
+            s.strength = strength
+            let m = RewritePrompt.messages(for: s)
+            XCTAssertTrue(m.system.contains("Never change, round, approximate, spell out, or drop any number"))
+        }
     }
 
     func testCleanStripsWrappers() {
@@ -308,6 +415,16 @@ final class SelectionRewriteTests: XCTestCase {
         XCTAssertEqual(RewritePrompt.clean("<passage>\nNew text.\n</passage>"), "New text.")
     }
 
+    func testAcademicSelectionRewrite() {
+        var s = spec()
+        XCTAssertFalse(SelectionRewrite.messages(for: s).system.contains("## Academic voice"))
+        s.academic = true
+        XCTAssertTrue(SelectionRewrite.messages(for: s).system.contains("## Academic voice"))
+        let user = SelectionRewrite.auditMessages(draft: "x", spec: s).user
+        XCTAssertTrue(user.contains("in four steps"))
+        XCTAssertTrue(user.contains("4. Read it as a reviewer in the field."))
+    }
+
     func testAuditKeepsTheContextAndNamesTells() {
         let m = SelectionRewrite.auditMessages(draft: "A pivotal draft.", spec: spec(), flagged: ["pivotal"])
         XCTAssertTrue(m.user.contains("<<<REWRITE_START>>>"))
@@ -463,5 +580,36 @@ final class LLMContextTests: XCTestCase {
         XCTAssertEqual(try LLMClient.parseModelInfo(router, style: .openAI).first?.contextLength, 200000)
         let gemini = #"{"models":[{"name":"models/g","inputTokenLimit":1048576,"supportedGenerationMethods":["generateContent"]}]}"#.data(using: .utf8)!
         XCTAssertEqual(try LLMClient.parseModelInfo(gemini, style: .gemini), [LLMModelInfo(id: "g", contextLength: 1048576)])
+    }
+}
+
+/// Passage rewrites that draw on text the user highlighted.
+final class HighlightedSourcePromptTests: XCTestCase {
+
+    func testHighlightedCounterpartIsDescribedAsTheUsersChoice() {
+        let doc = "Intro. The passage to rewrite. Outro. An extra bit."
+        let range = (doc as NSString).range(of: "The passage to rewrite.")
+        let spec = SelectionRewriteSpec(documentText: doc, range: range, otherTitle: "Original",
+                                        counterpart: "Hand-picked text.", counterpartIsMarked: true,
+                                        markedExcerpts: ["An extra bit.", "The passage to rewrite.", "  "],
+                                        passageWeight: 0.5, instructions: "Humanize.")
+        let m = SelectionRewrite.messages(for: spec)
+        XCTAssertTrue(m.user.contains("The text the user highlighted in “Original” for this passage:"), m.user)
+        XCTAssertTrue(m.user.contains("Hand-picked text."))
+        XCTAssertTrue(m.system.contains("highlighted by hand"), m.system)
+        XCTAssertTrue(m.system.contains("Merge the marked passage and the text the user highlighted in “Original” evenly"), m.system)
+        // Excerpts: the passage itself and blank ones are left out.
+        XCTAssertEqual(spec.usableExcerpts, ["An extra bit."])
+        XCTAssertTrue(m.user.contains("<highlighted_excerpt>\nAn extra bit.\n</highlighted_excerpt>"), m.user)
+    }
+
+    func testMatchedCounterpartKeepsTheLineMatchWording() {
+        let doc = "Intro. The passage. Outro."
+        let spec = SelectionRewriteSpec(documentText: doc, range: (doc as NSString).range(of: "The passage."),
+                                        counterpart: "Old passage.", passageWeight: 0.5, instructions: "Humanize.")
+        let m = SelectionRewrite.messages(for: spec)
+        XCTAssertTrue(m.user.contains("that matches this passage:"))
+        XCTAssertTrue(m.system.contains("cut along line boundaries"))
+        XCTAssertFalse(m.user.contains("highlighted"))
     }
 }

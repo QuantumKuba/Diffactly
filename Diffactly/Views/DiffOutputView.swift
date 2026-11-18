@@ -13,7 +13,11 @@ struct DiffOutputView: View {
         let model = OutputModel(
             result: document.result, layout: layout,
             collapse: document.collapseUnchanged, expanded: document.expandedFolds,
-            context: Self.contextLines
+            context: Self.contextLines,
+            userLinks: document.links.map {
+                OutputModel.Link(id: "l\($0.id)", isMove: false, left: document.lines(of: $0.left, on: .left),
+                                 right: document.lines(of: $0.right, on: .right), isUserLink: true)
+            }
         )
         VStack(spacing: 0) {
             header
@@ -148,12 +152,14 @@ struct OutputModel {
         let rowIDs: [Int]
     }
 
-    /// A band in the split view's centre lane: a move or a split/merge relation.
+    /// A band in the split view's centre lane: a move, a split/merge
+    /// relation, or passages the user (or an accepted rewrite) linked.
     struct Link: Identifiable {
         let id: String
         let isMove: Bool
         let left: ClosedRange<Int>
         let right: ClosedRange<Int>
+        var isUserLink = false
     }
 
     static let laneWidth: CGFloat = 44
@@ -168,7 +174,7 @@ struct OutputModel {
     /// Row of each linked line, to tell whether an off-screen end lies above or below.
     private(set) var rowOfEnd: [LinkEnd: Int] = [:]
 
-    init(result: DiffResult, layout: DiffDocument.Mode, collapse: Bool, expanded: Set<Int>, context: Int) {
+    init(result: DiffResult, layout: DiffDocument.Mode, collapse: Bool, expanded: Set<Int>, context: Int, userLinks: [Link] = []) {
         let maxLine = max(result.stats.leftLineCount, result.stats.rightLineCount, 1)
         gutterWidth = CGFloat(String(maxLine).count) * 7.5 + 14
 
@@ -223,6 +229,7 @@ struct OutputModel {
         if layout == .split {
             links = result.moves.map { Link(id: "m\($0.id)", isMove: true, left: $0.from, right: $0.to) }
                 + result.relations.map { Link(id: "r\($0.id)", isMove: false, left: $0.left...$0.left, right: $0.right...$0.right) }
+                + userLinks
             for link in links {
                 for n in link.left { linkedEnds.insert(LinkEnd(side: .left, line: n)) }
                 for n in link.right { linkedEnds.insert(LinkEnd(side: .right, line: n)) }
@@ -538,9 +545,9 @@ private struct LinkRibbons: View {
                 band.addPath(bottom)
                 band.closeSubpath()
 
-                let color = link.isMove ? DiffPalette.moved : DiffPalette.related
+                let color = link.isUserLink ? DiffPalette.link : (link.isMove ? DiffPalette.moved : DiffPalette.related)
                 context.fill(band, with: .color(color.opacity(dark ? 0.42 : 0.28)))
-                let style = link.isMove ? StrokeStyle(lineWidth: 1) : StrokeStyle(lineWidth: 1, dash: [3, 2])
+                let style = link.isMove || link.isUserLink ? StrokeStyle(lineWidth: link.isUserLink ? 1.5 : 1) : StrokeStyle(lineWidth: 1, dash: [3, 2])
                 context.stroke(top, with: .color(color.opacity(0.8)), style: style)
                 context.stroke(bottom, with: .color(color.opacity(0.8)), style: style)
             }

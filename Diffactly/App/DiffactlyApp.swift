@@ -6,6 +6,7 @@ struct DiffactlyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appearanceManager = AppearanceManager.shared
     @StateObject private var updater = UpdateChecker()
+    @ObservedObject private var sessions = SessionController.shared
     @State private var showingUpdateSheet = false
     
     var body: some Scene {
@@ -34,6 +35,8 @@ struct DiffactlyApp: App {
         .handlesExternalEvents(matching: [])
         .commands {
             DiffCommands()
+            SessionCommands(controller: sessions)
+            CommentCommands()
             TabCommands()
 
             CommandGroup(replacing: .appInfo) {

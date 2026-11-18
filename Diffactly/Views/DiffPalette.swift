@@ -43,6 +43,64 @@ enum DiffPalette {
         }
     }
 
+    /// Pending AI suggestions (indigo, so they don't read as a diff change).
+    static let suggestionNS = NSColor.systemIndigo
+    static var suggestion: Color { Color(nsColor: suggestionNS) }
+
+    static func suggestionTint(_ style: SuggestionMark.Style, appearance: NSAppearance? = nil) -> NSColor {
+        let dark = isDark(appearance)
+        switch style {
+        case .pending: return suggestionNS.withAlphaComponent(dark ? 0.16 : 0.09)
+        case .ready: return suggestionNS.withAlphaComponent(dark ? 0.30 : 0.18)
+        case .stale: return NSColor.systemGray.withAlphaComponent(dark ? 0.25 : 0.16)
+        // Accepted rewrites only get an underline, so the text reads plainly.
+        case .accepted, .history: return .clear
+        }
+    }
+
+    /// Passages linked across the two sides (blue, apart from moves' purple
+    /// and split/merge teal).
+    static let linkNS = NSColor.systemBlue
+    static var link: Color { Color(nsColor: linkNS) }
+
+    static func linkTint(highlighted: Bool, appearance: NSAppearance? = nil) -> NSColor {
+        let dark = isDark(appearance)
+        return highlighted ? linkNS.withAlphaComponent(dark ? 0.30 : 0.18) : linkNS.withAlphaComponent(dark ? 0.10 : 0.06)
+    }
+
+    /// Parts of a suggestion rewritten on their own, in its card (pink, apart
+    /// from the suggestion's indigo and the diff's green and red).
+    static let refinedNS = NSColor.systemPink
+    static var refined: Color { Color(nsColor: refinedNS) }
+
+    static func suggestionUnderline(_ style: SuggestionMark.Style) -> NSColor {
+        if style == .accepted { return suggestionNS.withAlphaComponent(0.55) }
+        return style == .stale || style == .history ? .systemGray : suggestionNS
+    }
+
+    /// Text highlighted as a source for AI rewrites (cyan, like a highlighter pen).
+    static let sourceMarkNS = NSColor.systemCyan
+    static var sourceMark: Color { Color(nsColor: sourceMarkNS) }
+
+    static func sourceMarkTint(appearance: NSAppearance? = nil) -> NSColor {
+        sourceMarkNS.withAlphaComponent(isDark(appearance) ? 0.24 : 0.16)
+    }
+
+    /// Comments: a soft amber wash with an orange underline, so they read as
+    /// notes rather than as a diff change or an AI suggestion.
+    static let commentNS = NSColor.systemOrange
+    static var comment: Color { Color(nsColor: commentNS) }
+
+    static func commentTint(resolved: Bool, appearance: NSAppearance? = nil) -> NSColor {
+        let dark = isDark(appearance)
+        if resolved { return NSColor.systemGray.withAlphaComponent(dark ? 0.20 : 0.12) }
+        return NSColor.systemYellow.withAlphaComponent(dark ? 0.24 : 0.26)
+    }
+
+    static func commentUnderline(resolved: Bool) -> NSColor {
+        resolved ? .systemGray : commentNS
+    }
+
     static func gutterMark(_ style: EditorHighlights.Style) -> NSColor {
         switch style {
         case .removed: return removedNS

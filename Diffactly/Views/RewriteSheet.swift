@@ -10,8 +10,6 @@ struct RewriteSheet: View {
     @ObservedObject private var store = AIStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showPrompt = false
-    @State private var isFetchingModels = false
-    @State private var modelError: String?
     @State private var detectStatus: String?
 
     var body: some View {
@@ -91,7 +89,10 @@ struct RewriteSheet: View {
                     }
             }
             ReferenceDocumentsSection(library: session.references, document: document, openFileNames: session.openFileNames(document))
-            Section("Model") { modelControls }
+            Section("Model") {
+                ModelControls(session: session)
+                TemperatureControls(session: session)
+            }
         }
         .formStyle(.grouped)
         .disabled(session.phase.isRunning)
@@ -110,7 +111,7 @@ struct RewriteSheet: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .help(session.passage == nil ? "Select a passage in an editor (or right-click a paragraph) to rewrite just that part" : "Rewrite a whole text, merge both, or just the selected passage")
+            .help(session.passage == nil ? "Select a passage in an editor (or right-click a paragraph) to rewrite just that part" : "Rewrite just the selected passage, or choose a whole text (or both) to rewrite everything")
             switch session.target {
             case .both: blendControl
             case .selection: selectionInfo
@@ -119,32 +120,24 @@ struct RewriteSheet: View {
         }
 
         Section("Style") {
-            HStack {
-                Picker("Prompt", selection: $session.promptID) {
-                    Section("Built-in") {
-                        ForEach(RewritePreset.builtIns) { Text($0.name).tag($0.id) }
-                    }
-                    if !store.customPrompts.isEmpty {
-                        Section("My Prompts") {
-                            ForEach(store.customPrompts) { Text($0.name).tag($0.id) }
-                        }
-                    }
-                }
-                SettingsLink { Image(systemName: "pencil") }
-                    .buttonStyle(.borderless)
-                    .help("Write your own rewriting and paraphrasing prompts in Settings → Prompts")
-            }
+            PromptPicker(session: session)
             Picker("Strength", selection: $session.strength) {
                 ForEach(RewriteStrength.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
+            Text(session.strength.transparentSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Toggle("Avoid AI tells", isOn: $session.avoidAITells)
                 .help("Adds a humanizer checklist: no “delve”, “testament”, “not just X but Y”, em-dash chains, summary endings, …")
+            AcademicVoiceToggle(session: session)
             Picker("Second pass", selection: $session.secondPass) {
                 ForEach(SecondPassMode.allCases) { Text($0.title).tag($0) }
             }
-            .help("Sends the draft back to the model to restore lost facts and rework sentences that still sound machine-written. “If tells remain” only does this when the scan still flags something, and names the flagged phrases.")
-            Toggle("Keep formatting", isOn: $session.preserveFormatting)
+            .help("Sends the draft back to the model to restore lost facts or numbers and rework sentences that still sound machine-written. “If tells remain” runs automatically whenever the scan flags tells, uniform cadence, or any dropped/altered number from the source.")
+            if session.target != .selection {
+                Toggle("Keep formatting", isOn: $session.preserveFormatting)
+            }
         }
     }
 
@@ -189,9 +182,14 @@ struct RewriteSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Toggle("Also show the model “\(document.title(for: passage.side.other))”", isOn: $session.includeOtherSide)
-                .disabled(document.text(for: passage.side.other).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help("Useful when the other side is an earlier or alternative version of the same text.")
+            if !document.text(for: passage.side.other).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                PassageBasisControl(session: session, title: document.title(for: passage.side),
+                                    otherTitle: document.title(for: passage.side.other), counterpart: session.passageCounterpart,
+                                    onClearHighlights: {
+                                        document.clearSourceMarks(on: passage.side.other)
+                                        session.refreshCounterpart(document)
+                                    })
+            }
         }
     }
 
@@ -229,75 +227,6 @@ struct RewriteSheet: View {
         }
     }
 
-    @ViewBuilder
-    private var modelControls: some View {
-        let provider = session.resolvedProvider(in: store)
-        Picker("Provider", selection: Binding(get: { provider?.id }, set: { session.providerID = $0 })) {
-            ForEach(store.providers) { p in
-                Label(p.displayName, systemImage: p.kind.isLocal ? "desktopcomputer" : "cloud").tag(Optional(p.id))
-            }
-        }
-        if let provider {
-            HStack {
-                TextField("Model", text: Binding(
-                    get: { provider.model },
-                    set: { var p = provider; p.model = $0; store.update(p) }
-                ), prompt: Text("model name"))
-                Menu {
-                    if provider.knownModels.isEmpty { Text("No models fetched yet") }
-                    ForEach(provider.knownModels, id: \.self) { model in
-                        Button(model) { var p = provider; p.model = model; store.update(p) }
-                    }
-                    Divider()
-                    Button("Fetch Models") { fetchModels(provider) }
-                } label: {
-                    if isFetchingModels { ProgressView().controlSize(.small) } else { Image(systemName: "list.bullet") }
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Pick from the models this server offers")
-            }
-            if let modelError { Text(modelError).font(.caption).foregroundStyle(.red) }
-            let efforts = ThinkingEffort.options(for: provider.kind)
-            if !efforts.isEmpty {
-                Picker("Thinking", selection: Binding(
-                    get: { provider.thinking },
-                    set: { var p = provider; p.thinking = $0; store.update(p) }
-                )) {
-                    ForEach(efforts) { Text($0.title).tag($0) }
-                }
-                .help("How long a reasoning model may think before answering. Lower is much faster; Off skips thinking, which usually rewrites less thoroughly. Saved with the provider.")
-            }
-        }
-        Toggle("Custom temperature", isOn: $session.useCustomTemperature)
-            .help("Off leaves sampling to the model’s default. 0.7–1.0 suits rewriting; higher drifts from the meaning. Summaries are capped at 0.7.")
-        if session.useCustomTemperature {
-            HStack {
-                Slider(value: $session.temperature, in: 0...1.5, step: 0.05)
-                Text(session.temperature, format: .number.precision(.fractionLength(2)))
-                    .monospacedDigit()
-                    .frame(width: 36, alignment: .trailing)
-            }
-        }
-    }
-
-    private func fetchModels(_ provider: AIProvider) {
-        isFetchingModels = true
-        modelError = nil
-        Task {
-            defer { isFetchingModels = false }
-            do {
-                let models = try await LLMClient(endpoint: store.endpoint(for: provider)).listModelInfo()
-                var p = store.provider(id: provider.id) ?? provider
-                p.setModels(models)
-                store.update(p)
-                if models.isEmpty { modelError = "The server listed no models." }
-            } catch {
-                modelError = error.localizedDescription
-            }
-        }
-    }
-
     // MARK: Result
 
     private var resultPane: some View {
@@ -306,12 +235,12 @@ struct RewriteSheet: View {
                 Text(session.task == .summary ? "Differences" : session.outputPassage != nil ? "New Passage" : "Result")
                     .font(.headline)
                     .fixedSize()
+                versionMenu
                 statusLabel
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 8)
                 if session.task == .rewrite { tellComparison.layoutPriority(1) }
-                historyMenu
             }
             .padding(.horizontal, 12)
             .frame(height: 34)
@@ -357,6 +286,11 @@ struct RewriteSheet: View {
                 }
             }
             .background(Color(nsColor: .textBackgroundColor))
+            if let verification = session.outputVerification, !session.phase.isRunning,
+               verification.sourceNumberCount > 0 || verification.burstinessCV > 0 {
+                Divider()
+                VerificationBar(verification: verification)
+            }
             if let tells = session.outputTells, !tells.hits.isEmpty, !session.phase.isRunning {
                 Divider()
                 TellList(report: tells)
@@ -388,7 +322,7 @@ struct RewriteSheet: View {
             } else if let blocker = session.blocker(document: document, store: store) {
                 Text(blocker)
             } else if session.task == .rewrite, session.target == .selection {
-                Text("Press Rewrite (⌘↩) to rewrite the selected passage. The new version streams in here; edit it if you like, then replace the selection, or put an edited copy on the other side to compare.")
+                Text("Press Rewrite Selection (⌘↩) to rewrite only the selected passage. The new version streams in here; edit it if you like, then review it in the text, where you accept or reject it. Nothing changes until you do.")
             } else if session.task == .rewrite {
                 Text("Press Rewrite (⌘↩) to generate. The result streams in here; edit it if you like, then put it into either side to see the changes.")
             } else {
@@ -494,21 +428,52 @@ struct RewriteSheet: View {
         .help("\(title): \(report.level.title) (\(report.hits.count) in \(report.wordCount) words, \(report.emDashes) em dashes)")
     }
 
-    private var historyMenu: some View {
-        let items = session.history.filter { $0.task == session.task }
-        return Menu {
-            if items.isEmpty { Text("No earlier results") }
-            ForEach(items) { item in
-                Button("\(item.date.formatted(date: .omitted, time: .shortened)) · \(item.label)") { session.restore(item) }
+    /// "‹ V2 of 3 ›": the versions of the result on show (the same passage,
+    /// source or summary, asked again), and the latest result for anything
+    /// else this window rewrote.
+    @ViewBuilder
+    private var versionMenu: some View {
+        let task = session.task
+        let versions = session.versions(for: task)
+        let others = session.otherResults(for: task)
+        let writing = session.phase.isRunning && session.runTask == task
+        let count = versions.count + (writing ? 1 : 0)
+        if count > 1 || !others.isEmpty {
+            VersionSwitcher(current: writing ? count : session.shownVersionNumber(for: task), count: count,
+                            isDisabled: session.phase.isRunning,
+                            select: { number in
+                                if versions.indices.contains(number - 1) { session.restore(versions[number - 1]) }
+                            }) {
+                ForEach(Array(versions.enumerated()), id: \.element.id) { index, item in
+                    Toggle(VersionTitle.entry(number: index + 1, date: item.date, label: item.label),
+                           isOn: Binding(get: { session.shownVersion[task] == item.id },
+                                         set: { if $0 { session.restore(item) } }))
+                }
+                if !others.isEmpty {
+                    Section("Other Results") {
+                        ForEach(others, id: \.item.id) { other in
+                            Button("\(subjectTitle(other.item.subject)) · \(other.count == 1 ? "1 version" : "\(other.count) versions") · \(other.item.date.formatted(date: .omitted, time: .shortened))") {
+                                session.restore(other.item)
+                            }
+                        }
+                    }
+                }
             }
-        } label: {
-            Image(systemName: "clock.arrow.circlepath")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .disabled(items.isEmpty || session.phase.isRunning)
-        .help("Bring back an earlier result from this window")
+    }
+
+    /// What a series of results was made from, for the version menu.
+    private func subjectTitle(_ subject: RewriteSession.Subject) -> String {
+        switch subject {
+        case .text(.left): return document.title(for: .left)
+        case .text(.right): return document.title(for: .right)
+        case .text(.both): return "Both texts"
+        case .passage(let side, let text):
+            let words = text.split(whereSeparator: \.isWhitespace)
+            let start = words.prefix(5).joined(separator: " ")
+            return "Selection in \(document.title(for: side)): “\(start)\(words.count > 5 ? "…" : "")”"
+        case .summary: return "Summary"
+        }
     }
 
     // MARK: Footer
@@ -569,9 +534,18 @@ struct RewriteSheet: View {
 
     private var currentResult: String { session.task == .rewrite ? session.output : session.summary }
 
+    /// Names what will be rewritten, so a whole text is never rewritten by surprise.
     private var runTitle: String {
         switch session.task {
-        case .rewrite: return session.output.isEmpty ? "Rewrite" : "Rewrite Again"
+        case .rewrite:
+            let what: String
+            switch session.target {
+            case .selection: what = "Selection"
+            case .left: what = document.title(for: .left)
+            case .right: what = document.title(for: .right)
+            case .both: what = "Both"
+            }
+            return session.output.isEmpty ? "Rewrite \(what)" : "Rewrite \(what) Again"
         case .summary: return session.summary.isEmpty ? "Summarize" : "Summarize Again"
         }
     }
@@ -596,16 +570,22 @@ struct RewriteSheet: View {
     private var usePassageMenu: some View {
         let side = session.outputPassage?.side ?? .right
         return Menu {
-            Button("Replace Selection in \(document.title(for: side))") { usePassage(inPlace: true) }
+            Button("Review in Text") { reviewInText() }
+            Divider()
+            Button("Replace Selection in \(document.title(for: side)) Now") { usePassage(inPlace: true) }
             Button("Put Edited Copy in \(document.title(for: side.other)) and Compare") { usePassage(inPlace: false) }
         } label: {
-            Text("Replace Selection")
+            Text("Review in Text")
         } primaryAction: {
-            usePassage(inPlace: true)
+            reviewInText()
         }
         .fixedSize()
         .disabled(session.output.isEmpty || session.phase.isRunning)
-        .help("Swap the selected passage for the new one (⌘Z in the editor undoes it), or keep \(document.title(for: side).lowercased()) as is and compare against an edited copy")
+        .help("Show the new passage as a suggestion on the selection, where you accept or reject it. Or replace the selection straight away (⌘Z undoes it), or compare against an edited copy on the other side.")
+    }
+
+    private func reviewInText() {
+        if session.reviewPassageInText(document: document) { dismiss() }
     }
 
     private func usePassage(inPlace: Bool) {
@@ -634,6 +614,40 @@ extension AITells.Level {
 }
 
 // MARK: - Pieces
+
+/// Verification metrics bar showing number fidelity and sentence cadence CV.
+private struct VerificationBar: View {
+    let verification: AITells.Verification
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                if verification.sourceNumberCount > 0 {
+                    if verification.allNumbersPreserved {
+                        Label("All \(verification.sourceNumberCount) number\(verification.sourceNumberCount == 1 ? "" : "s") kept", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(DiffPalette.added)
+                            .help("Every factual number in the source text is present in the result.")
+                    } else {
+                        Label("Missing/altered numbers: \(verification.missingNumbers.joined(separator: ", "))", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(DiffPalette.removed)
+                            .help("These numbers from the source were not found verbatim in the result.")
+                    }
+                }
+
+                if verification.burstinessCV > 0 {
+                    let cv = verification.burstinessCV.formatted(.number.precision(.fractionLength(2)))
+                    Label("Cadence CV \(cv)", systemImage: "waveform.path.ecg")
+                        .foregroundStyle(verification.burstinessCV >= 0.35 ? AnyShapeStyle(.secondary) : AnyShapeStyle(DiffPalette.modified))
+                        .help("Sentence-length coefficient of variation (σ/μ). Human prose usually varies sentence length (CV ≥ 0.40); flat AI cadence is often < 0.32.")
+                }
+            }
+            .font(.caption)
+            .monospacedDigit()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+    }
+}
 
 /// The tells left in the result, as chips.
 private struct TellList: View {

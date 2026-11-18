@@ -12,14 +12,26 @@ public enum RewriteStrength: String, Codable, CaseIterable, Sendable, Identifiab
     public var id: String { rawValue }
     public var title: String { rawValue.capitalized }
 
+    /// Short description shown under the strength picker.
+    public var transparentSummary: String {
+        switch self {
+        case .light:
+            return "Fixes AI tells or awkward phrasing; leaves strong sentences untouched. Keeps all numbers and meaning exact."
+        case .moderate:
+            return "Reorders clauses, varies sentence length and rhythm, and replaces stock connectors while keeping paragraph flow close. Keeps all numbers and meaning exact."
+        case .strong:
+            return "Restructures paragraphs around their main points and rephrases nearly every sentence with fresh syntax. Keeps all numbers and meaning exact."
+        }
+    }
+
     var instruction: String {
         switch self {
         case .light:
-            return "Make the minimum effective edit. Change only what reads as machine-written, awkward or wrong; leave strong sentences exactly as they are."
+            return "Make the minimum effective edit. Change only what reads as machine-written, formulaic, or awkward; leave strong sentences exactly as they are. Keep every number, date, name, and claim untouched."
         case .moderate:
-            return "Rework sentences freely where it helps: reorder clauses, merge or split sentences, and replace stock wording. Keep the paragraph structure and order of ideas recognisable."
+            return "Rework sentences freely where it helps: reorder clauses, merge or split sentences to vary cadence, and replace stock wording and connectors. Keep the paragraph structure and order of ideas recognisable, while preserving every number, date, name, and claim verbatim."
         case .strong:
-            return "Rewrite thoroughly. Restructure paragraphs around their main points, rephrase nearly every sentence in your own words, and drop padding, while keeping all of the information."
+            return "Rewrite thoroughly. Restructure paragraphs around their main points and rephrase nearly every sentence in fresh syntax: shift clause order, split or combine sentences to vary cadence, and vary connectors alongside content words — never just swap single synonyms inside the same sentence frame. Keep all of the information and every number, date, and name exact."
         }
     }
 }
@@ -43,6 +55,9 @@ public struct RewriteSpec: Sendable {
     public var extraNotes: String
     /// Append the catalogue of AI-writing tells to avoid.
     public var avoidAITells: Bool
+    /// Treat the text as scholarly writing (see `AcademicHumanizer`): keep
+    /// its register, hedging and citations, and match claims to evidence.
+    public var academic: Bool
     public var preserveFormatting: Bool
     /// Background documents for the session (see `ReferenceContext`).
     public var references: [ReferenceDocument]
@@ -55,8 +70,9 @@ public struct RewriteSpec: Sendable {
         source: RewriteSource = .both, leftWeight: Double = 0.5,
         strength: RewriteStrength = .moderate, instructions: String,
         extraNotes: String = "", avoidAITells: Bool = true, preserveFormatting: Bool = true,
-        references: [ReferenceDocument] = [], markup: TextMarkup? = nil
+        references: [ReferenceDocument] = [], markup: TextMarkup? = nil, academic: Bool = false
     ) {
+        self.academic = academic
         self.leftText = leftText
         self.rightText = rightText
         self.leftTitle = leftTitle
@@ -125,6 +141,7 @@ public enum RewritePrompt {
         let markup = spec.resolvedMarkup
         if let rules = markup.rules { system.append(rules) }
         if spec.avoidAITells { system.append(aiTellGuidance(sourcesUseDashes: markup.usesEmDashes(spec.sourceText), markup: markup)) }
+        if spec.academic { system.append(AcademicHumanizer.guidance(strength: spec.strength, markup: markup, withTellGuidance: spec.avoidAITells)) }
         let notes = spec.extraNotes.trimmingCharacters(in: .whitespacesAndNewlines)
         if !notes.isEmpty { system.append("## Extra instructions from the user\n" + notes) }
         system.append(outputRules(preserveFormatting: spec.preserveFormatting))
@@ -136,15 +153,26 @@ public enum RewritePrompt {
     /// A follow-up pass: re-check a draft for surviving tells and lost facts.
     /// `flagged` lists phrases a scan of the draft found (see `AITells`); they
     /// are named explicitly so the model fixes those first.
-    public static func auditMessages(draft: String, spec: RewriteSpec, flagged: [String] = []) -> Messages {
+    /// `missingNumbers` lists numbers from the source that were dropped or altered.
+    public static func auditMessages(
+        draft: String,
+        spec: RewriteSpec,
+        flagged: [String] = [],
+        missingNumbers: [String] = []
+    ) -> Messages {
         let first = messages(for: spec)
-        let flaggedNote = flagged.isEmpty ? "" : "\n\nAn automatic scan flagged these in the draft; rework each sentence that contains one (don't just swap the word for a synonym): " + flagged.prefix(20).map { "“\($0)”" }.joined(separator: ", ") + "."
+        let missingNote = missingNumbers.isEmpty
+            ? ""
+            : "\n\nCRITICAL — An automatic check found that these numbers from the source were dropped or altered in the draft; restore each one in its exact numerical form and meaning: " + missingNumbers.prefix(20).map { "“\($0)”" }.joined(separator: ", ") + "."
+        let flaggedNote = flagged.isEmpty
+            ? ""
+            : "\n\nAn automatic scan flagged these in the draft; rework each sentence that contains one (don't just swap the word for a synonym): " + flagged.prefix(20).map { "“\($0)”" }.joined(separator: ", ") + "."
         let user = """
         Below is a draft rewrite of the source text\(spec.source == .both ? "s" : "") you were given, followed by the source\(spec.source == .both ? "s" : "") again.
 
-        Check the draft in two steps, silently:
-        1. Did it drop or change any fact, name, number, date, quote, citation or claim from the source? Restore anything lost. Remove anything invented.
-        2. Read it as a sharp human editor. Which sentences still sound machine-written? Look hardest at the tells that most often survive a rewrite: "not X but Y" contrasts, one-line closers and summary endings, groups of three, em dashes, -ing tails ("…, highlighting…"), "serves as" instead of "is", stacked hedges, and repeated sentence openings or lengths. Rewrite those sentences around their point.\(flaggedNote)
+        Check the draft in \(spec.academic ? "three" : "two") steps, silently:
+        1. Did it drop or change any fact, name, number, percentage, currency, date, quote, citation or claim from the source? Restore anything lost in its exact numerical or factual form. Remove anything invented.\(missingNote)
+        2. Read it as a sharp human editor. Which sentences still sound machine-written? Look hardest at the tells that most often survive a rewrite: "not X but Y" contrasts, one-line closers and summary endings, groups of three, em dashes, -ing tails ("…, highlighting…"), "serves as" instead of "is", stacked hedges, and repeated sentence openings or uniform sentence lengths. Rewrite those sentences around their point.\(flaggedNote)\(spec.academic ? "\n" + AcademicHumanizer.auditStep(3) : "")
 
         Then output only the corrected final text, nothing else.
 
@@ -168,6 +196,7 @@ public enum RewritePrompt {
     static let fidelityRules = """
     ## Keep the meaning
     - Keep every fact, name, number, date, quotation, citation and claim. Do not add facts, examples, statistics or sources that are not in the source text.
+    - Never change, round, approximate, spell out, or drop any number, percentage, currency amount, range, measurement, version number or unit. Keep numerals in their exact numerical form (for example, `61.3%` stays `61.3%`, `1,200` stays `1,200`, `3` stays `3`).
     - Keep the writer's register and point of view: a casual note stays casual, a technical document stays plain and precise, first person stays first person. Keep opinions, humour and odd specific details; they are what make writing sound human.
     - Leave quotations, titles, proper names, code, commands, URLs and file paths exactly as written.
     - Write in the same language as the source.
@@ -221,7 +250,7 @@ public enum RewritePrompt {
         - Don't stack hedges ("could potentially", "may arguably"). Commit, or hedge once.
         - No signposting or staged openers ("Let's break this down", "Here's what you need to know", "The best part:"), no arguing with claims nobody made ("This isn't about…"), and no metadiscourse ("this article explores…").
         - No summary or moral at the end ("In conclusion", "Ultimately", "Overall", "The future looks bright") and no fake-deep one-line kicker. End on the last concrete point.
-        - Vary sentence length and openings the way a person does: some long sentences, some short, not every paragraph the same shape. Don't overcorrect into a string of punchy fragments; that is a tell too.
+        - Vary sentence length and openings the way a person does (burstiness): mix short, direct sentences (5–10 words) with longer multi-clause sentences (22–35 words), and never start three consecutive sentences with the same grammatical subject or transition. Don't overcorrect into a string of punchy fragments; that is a tell too.
         - Don't cycle synonyms to avoid repeating a word. Repeating the right word is fine.
         - If a sentence could be moved unchanged to a text about a different subject, it is filler: cut it or make it specific.
         \(dashRule)

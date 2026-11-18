@@ -23,7 +23,12 @@ enum WindowTabs {
     }
 
     static func newTab(using openWindow: OpenWindowAction) {
-        pendingHost = currentWindow
+        openTab(joining: currentWindow, using: openWindow)
+    }
+
+    /// Opens a comparison window as a tab of `host`, or with nil as a window of its own.
+    static func openTab(joining host: NSWindow?, using openWindow: OpenWindowAction) {
+        pendingHost = host
         openWindow(id: windowID)
     }
 
