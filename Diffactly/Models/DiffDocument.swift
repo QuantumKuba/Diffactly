@@ -64,15 +64,19 @@ final class DiffDocument: ObservableObject {
     @Published var tabTitle: String = ""
     /// Drives the "Rename Tab…" sheet.
     @Published var isRenamingTab = false
-    /// Drives the AI sheet; `aiTask` picks which tab it opens on and
-    /// `aiStartsWithSelection` whether it rewrites just the selected passage.
+    /// Drives the AI window; `aiTask` picks which tab it opens on,
+    /// `aiStartsWithSelection` whether it rewrites just the selected passage,
+    /// and `aiRequestID` changes on every request so an already-open window
+    /// comes forward and refreshes when idle.
     @Published var isShowingAI = false
     @Published var aiTask: AITask = .rewrite
     @Published var aiStartsWithSelection = false
+    @Published private(set) var aiRequestID = UUID()
 
     func showAI(_ task: AITask, selection: Bool = false) {
         aiTask = task
         aiStartsWithSelection = selection && self.selection != nil
+        aiRequestID = UUID()
         isShowingAI = true
     }
 

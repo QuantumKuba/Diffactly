@@ -93,14 +93,21 @@ final class AIStore: ObservableObject {
     @Published private(set) var keyRevision = 0
 
     private let defaults = UserDefaults.standard
+    private let persists: Bool
     private enum Keys {
         static let providers = "ai.providers"
         static let prompts = "ai.customPrompts"
     }
 
-    init() {
-        providers = Self.load([AIProvider].self, Keys.providers) ?? []
-        customPrompts = Self.load([RewritePreset].self, Keys.prompts) ?? []
+    init(persists: Bool = true) {
+        self.persists = persists
+        if persists {
+            providers = Self.load([AIProvider].self, Keys.providers) ?? []
+            customPrompts = Self.load([RewritePreset].self, Keys.prompts) ?? []
+        } else {
+            providers = []
+            customPrompts = []
+        }
     }
 
     var allPrompts: [RewritePreset] { RewritePreset.builtIns + customPrompts }
@@ -201,6 +208,7 @@ final class AIStore: ObservableObject {
     // MARK: Persistence
 
     private func save<T: Encodable>(_ value: T, _ key: String) {
+        guard persists else { return }
         if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: key) }
     }
 

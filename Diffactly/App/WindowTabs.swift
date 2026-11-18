@@ -10,10 +10,32 @@ enum WindowTabs {
     /// The window a requested tab should join, until that tab's window appears.
     private static weak var pendingHost: NSWindow?
 
-    /// The comparison window the user is working in (a sheet's parent rather than the sheet).
+    private final class WeakWindow {
+        weak var window: NSWindow?
+        init(_ window: NSWindow) { self.window = window }
+    }
+
+    private static var auxiliaryParents: [ObjectIdentifier: WeakWindow] = [:]
+
+    static func registerAuxiliary(_ window: NSWindow, for parent: NSWindow) {
+        auxiliaryParents = auxiliaryParents.filter { $0.value.window != nil }
+        auxiliaryParents[ObjectIdentifier(window)] = WeakWindow(parent)
+    }
+
+    static func unregisterAuxiliary(_ window: NSWindow) {
+        auxiliaryParents.removeValue(forKey: ObjectIdentifier(window))
+    }
+
+    static func resolvedParent(for window: NSWindow) -> NSWindow {
+        let resolved = window.sheetParent ?? window
+        return auxiliaryParents[ObjectIdentifier(resolved)]?.window ?? resolved
+    }
+
+    /// The comparison window the user is working in (a sheet's or auxiliary
+    /// window's parent rather than the sheet/panel itself).
     static var currentWindow: NSWindow? {
-        let window = NSApp.mainWindow ?? NSApp.keyWindow
-        return window?.sheetParent ?? window
+        guard let window = NSApp.mainWindow ?? NSApp.keyWindow else { return nil }
+        return resolvedParent(for: window)
     }
 
     /// Windows in the current tab group, in tab-bar order.

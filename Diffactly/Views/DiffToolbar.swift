@@ -4,6 +4,7 @@ import DiffactlyCore
 
 struct DiffToolbar: ToolbarContent {
     @ObservedObject var document: DiffDocument
+    @ObservedObject var rewrite: RewriteSession
     @Binding var showIgnoreRules: Bool
 
     var body: some ToolbarContent {
@@ -45,16 +46,23 @@ struct DiffToolbar: ToolbarContent {
             .help("Transform both texts (undoable)")
 
             Menu {
+                if rewrite.phase.isRunning {
+                    Button("Show Running AI Task…") { document.showAI(rewrite.runTask ?? .rewrite) }
+                    Button("Stop AI Task", role: .destructive) { rewrite.stop() }
+                    Divider()
+                }
                 Button("Rewrite with AI…") { document.showAI(.rewrite) }
                 Button("Rewrite Selection with AI…") { document.showAI(.rewrite, selection: true) }
                     .disabled(document.selection == nil)
                 Button("Summarize Differences with AI…") { document.showAI(.summary) }
             } label: {
-                Label("AI", systemImage: "sparkles")
+                Label(rewrite.phase.isRunning ? "AI Running" : "AI", systemImage: "sparkles")
             } primaryAction: {
-                document.showAI(.rewrite)
+                document.showAI(rewrite.phase.isRunning ? (rewrite.runTask ?? .rewrite) : .rewrite)
             }
-            .help("Humanize, paraphrase or merge the texts (⌥⌘R), rewrite just the selection (⌥⌘E), or summarize the main differences (⇧⌥⌘R)")
+            .help(rewrite.phase.isRunning
+                  ? "AI is running in the background — click to show the AI window"
+                  : "Humanize, paraphrase or merge the texts (⌥⌘R), rewrite just the selection (⌥⌘E), or summarize the main differences (⇧⌥⌘R)")
 
             Button {
                 document.swapSides()

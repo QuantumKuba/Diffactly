@@ -154,7 +154,34 @@ final class RewriteSession: ObservableObject {
 
     private var job: Task<Void, Never>?
     private var raw = ""
-    private let defaults = UserDefaults.standard
+    private var tokenEstimateCache: TokenEstimateCache?
+    private let defaults: UserDefaults
+    private let urlSession: URLSession
+
+    private struct TokenEstimateCache: Equatable {
+        var task: AITask
+        var source: RewriteSource
+        var rewritesSelection: Bool
+        var passage: Passage?
+        var includeOtherSide: Bool
+        var leftWeight: Double
+        var strength: RewriteStrength
+        var instructions: String
+        var extraNotes: String
+        var avoidAITells: Bool
+        var preserveFormatting: Bool
+        var summaryDetail: SummaryDetail
+        var summaryFocus: SummaryFocus
+        var leftText: String
+        var rightText: String
+        var leftTitle: String
+        var rightTitle: String
+        var leftName: String?
+        var rightName: String?
+        var diffStats: DiffStats
+        var hunkCount: Int
+        var tokens: Int
+    }
 
     private enum Keys {
         static let source = "rewrite.source"
@@ -173,8 +200,10 @@ final class RewriteSession: ObservableObject {
         static let includeOther = "rewrite.includeOtherSide"
     }
 
-    init() {
-        let d = UserDefaults.standard
+    init(urlSession: URLSession = .shared, defaults: UserDefaults = .standard) {
+        self.urlSession = urlSession
+        self.defaults = defaults
+        let d = defaults
         source = RewriteSource(rawValue: d.string(forKey: Keys.source) ?? "") ?? .both
         leftWeight = d.object(forKey: Keys.weight) as? Double ?? 0.5
         strength = RewriteStrength(rawValue: d.string(forKey: Keys.strength) ?? "") ?? .moderate
@@ -196,8 +225,14 @@ final class RewriteSession: ObservableObject {
 
     // MARK: Opening
 
-    /// Called when the sheet appears: picks the tab and captures the selection.
+    /// Called when the AI window appears (or is re-triggered): picks the tab
+    /// and captures the selection, unless a run is already in progress.
     func prepare(for document: DiffDocument) {
+        if phase.isRunning {
+            task = runTask ?? task
+            document.aiStartsWithSelection = false
+            return
+        }
         task = document.aiTask
         if let selection = document.selection, !selection.text.isEmpty {
             let current = document.text(for: selection.side)
@@ -317,26 +352,60 @@ final class RewriteSession: ObservableObject {
         }
     }
 
-    /// Rough input size. Cheap enough to call on every redraw: references are
-    /// counted by length and the summary's diff isn't formatted.
+    /// Rough input size. Cached across streaming redraws so 20 fps progress
+    /// updates don't re-scan markup or rebuild large prompt strings.
     func estimatedInputTokens(document: DiffDocument, store: AIStore) -> Int {
         let references = self.references.characterCount(excludingFileNames: openFileNames(document)) / 4
+        let instructions = resolvedPrompt(in: store).instructions
+        let probe = TokenEstimateCache(
+            task: task,
+            source: source,
+            rewritesSelection: rewritesSelection,
+            passage: passage,
+            includeOtherSide: includeOtherSide,
+            leftWeight: leftWeight,
+            strength: strength,
+            instructions: instructions,
+            extraNotes: extraNotes,
+            avoidAITells: avoidAITells,
+            preserveFormatting: preserveFormatting,
+            summaryDetail: summaryDetail,
+            summaryFocus: summaryFocus,
+            leftText: document.leftText,
+            rightText: document.rightText,
+            leftTitle: document.title(for: .left),
+            rightTitle: document.title(for: .right),
+            leftName: document.leftName,
+            rightName: document.rightName,
+            diffStats: document.result.stats,
+            hunkCount: document.result.hunks.count,
+            tokens: tokenEstimateCache?.tokens ?? 0
+        )
+        if let cached = tokenEstimateCache, cached == probe {
+            return cached.tokens + references
+        }
+        let promptTokens: Int
         switch task {
         case .rewrite:
             if rewritesSelection, let passage {
-                return SelectionRewrite.messages(for: selectionSpec(passage, document: document, store: store, withReferences: false)).estimatedTokens + references
+                promptTokens = SelectionRewrite.messages(for: selectionSpec(passage, document: document, store: store, withReferences: false)).estimatedTokens
+            } else {
+                var spec = rewriteSpec(document: document, store: store)
+                spec.references = []
+                promptTokens = RewritePrompt.messages(for: spec).estimatedTokens
             }
-            var spec = rewriteSpec(document: document, store: store)
-            spec.references = []
-            return RewritePrompt.messages(for: spec).estimatedTokens + references
         case .summary:
             let spec = summarySpec(document: document)
             let stats = spec.result.stats
             let texts = DiffSummaryPrompt.includesFullTexts(spec) ? spec.leftText.count + spec.rightText.count : 0
             // The diff holds the changed text plus a line of context around each change.
             let diff = min(DiffSummaryPrompt.patchLimit, stats.removedCharacters + stats.addedCharacters + spec.result.hunks.count * 240)
-            return (texts + diff + 2_400) / 4 + references
+            promptTokens = (texts + diff + 2_400) / 4
         }
+        var updated = probe
+        updated.tokens = promptTokens
+        tokenEstimateCache = updated
+        return promptTokens + references
     }
 
     /// Why the current task can't run right now, or nil when it can.
@@ -406,7 +475,7 @@ final class RewriteSession: ObservableObject {
             maxTokens: maxTokens,
             passage: nil,
             label: "\(resolvedPrompt(in: store).name) · \(provider.model)",
-            client: LLMClient(endpoint: store.endpoint(for: provider))
+            client: LLMClient(endpoint: store.endpoint(for: provider), session: urlSession)
         )
     }
 
@@ -430,7 +499,7 @@ final class RewriteSession: ObservableObject {
                 input: messages, provider: provider),
             passage: passage,
             label: "\(resolvedPrompt(in: store).name) (selection) · \(provider.model)",
-            client: LLMClient(endpoint: store.endpoint(for: provider))
+            client: LLMClient(endpoint: store.endpoint(for: provider), session: urlSession)
         )
     }
 
@@ -493,7 +562,7 @@ final class RewriteSession: ObservableObject {
             finish(label: nil)
             return
         }
-        let client = LLMClient(endpoint: store.endpoint(for: provider))
+        let client = LLMClient(endpoint: store.endpoint(for: provider), session: urlSession)
         let temperature = useCustomTemperature ? min(temperature, 0.7) : nil
         let m = DiffSummaryPrompt.messages(for: spec)
         let cloud = summaryDetail == .brief ? 8_192 : 16_384
@@ -523,34 +592,49 @@ final class RewriteSession: ObservableObject {
         LLMRequest(context: m.context, system: m.system, messages: [LLMMessage(.user, m.user)], temperature: temperature, maxTokens: maxTokens)
     }
 
+    static func hasOpenThinkingTag(_ raw: String) -> Bool {
+        for (open, close) in [("<think>", "</think>"), ("<thinking>", "</thinking>"), ("<reasoning>", "</reasoning>")] {
+            if raw.contains(open) && !raw.contains(close) { return true }
+        }
+        return false
+    }
+
     /// Streams one request into `target`, keeping the "thinking" state current,
     /// and returns the cleaned final text. With `keepUntilText`, what `target`
     /// shows stays until the new answer starts (the second pass shouldn't
     /// blank the draft while the model thinks).
     private func stream(_ client: LLMClient, _ request: LLMRequest, into target: ReferenceWritableKeyPath<RewriteSession, String>, keepUntilText: Bool = false) async throws -> (text: String, truncated: Bool) {
         raw = ""
+        var reasoningCount = 0
         reasoningCharacters = 0
         outputBudget = request.maxTokens
         var truncated = false
         var lastUpdate = Date.distantPast
         func publish() {
             let cleaned = RewritePrompt.clean(raw)
-            if !(keepUntilText && cleaned.isEmpty) { self[keyPath: target] = cleaned }
-            let inlineThinking = raw.contains("<think>") && !raw.contains("</think>")
-            isThinking = cleaned.isEmpty && (reasoningCharacters > 0 || inlineThinking)
+            if !(keepUntilText && cleaned.isEmpty), self[keyPath: target] != cleaned {
+                self[keyPath: target] = cleaned
+            }
+            if reasoningCharacters != reasoningCount {
+                reasoningCharacters = reasoningCount
+            }
+            let thinkingNow = cleaned.isEmpty && (reasoningCount > 0 || Self.hasOpenThinkingTag(raw))
+            if isThinking != thinkingNow {
+                isThinking = thinkingNow
+            }
             lastUpdate = Date()
         }
         for try await delta in client.stream(request) {
             switch delta {
             case .text(let t): raw += t
-            case .reasoning(let t): reasoningCharacters += t.count
+            case .reasoning(let t): reasoningCount += t.count
             case .truncated: truncated = true
             }
             // Repainting on every token is wasteful; ~20 fps is plenty.
             if Date().timeIntervalSince(lastUpdate) > 0.05 { publish() }
         }
         publish()
-        isThinking = false
+        if isThinking { isThinking = false }
         return (RewritePrompt.clean(raw), truncated)
     }
 
