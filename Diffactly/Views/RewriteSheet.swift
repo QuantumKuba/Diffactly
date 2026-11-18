@@ -2,11 +2,12 @@ import SwiftUI
 import AppKit
 import DiffactlyCore
 
-/// The AI sheet: rewrite (humanize, paraphrase or merge) the texts, or
+/// The AI window: rewrite (humanize, paraphrase or merge) the texts, or
 /// summarize the main differences between them, with a cloud or local model.
 struct RewriteSheet: View {
     @ObservedObject var document: DiffDocument
     @ObservedObject var session: RewriteSession
+    var onDismiss: (() -> Void)? = nil
     @ObservedObject private var store = AIStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showPrompt = false
@@ -40,6 +41,7 @@ struct RewriteSheet: View {
         }
         .frame(minWidth: 740, idealWidth: 940, maxWidth: 1400, minHeight: 420, idealHeight: 640, maxHeight: 1000)
         .onAppear { session.prepare(for: document) }
+        .onChange(of: document.aiRequestID) { _, _ in session.prepare(for: document) }
     }
 
     // MARK: Empty state
@@ -515,8 +517,9 @@ struct RewriteSheet: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Button("Close") { session.stop(); dismiss() }
+            Button(session.phase.isRunning ? "Hide" : "Close") { closeWindow() }
                 .keyboardShortcut(.cancelAction)
+                .help(session.phase.isRunning ? "Hide this window while the AI keeps running in the background" : "Close the AI window")
             if session.task == .rewrite, session.applied != nil {
                 Button("Revert Last Use") { session.revert(in: document) }
                     .help("Put back the text that the result replaced")
@@ -525,6 +528,14 @@ struct RewriteSheet: View {
             if !store.providers.isEmpty { actions }
         }
         .padding(12)
+    }
+
+    private func closeWindow() {
+        if let onDismiss {
+            onDismiss()
+        } else {
+            dismiss()
+        }
     }
 
     @ViewBuilder
@@ -609,7 +620,7 @@ struct RewriteSheet: View {
     }
 
     private func usePassage(inPlace: Bool) {
-        if session.applyPassage(in: document, inPlace: inPlace) { dismiss() }
+        if session.applyPassage(in: document, inPlace: inPlace) { closeWindow() }
     }
 
     private func copy(_ text: String) {
@@ -619,7 +630,7 @@ struct RewriteSheet: View {
 
     private func use(_ side: DiffDocument.Side, compare: Bool) {
         session.apply(to: side, in: document, compare: compare)
-        if compare { dismiss() }
+        if compare { closeWindow() }
     }
 }
 

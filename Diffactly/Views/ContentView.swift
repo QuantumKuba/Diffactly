@@ -5,7 +5,9 @@ import DiffactlyCore
 struct ContentView: View {
     @StateObject private var document = DiffDocument()
     @StateObject private var rewrite = RewriteSession()
+    @ObservedObject private var appearanceManager = AppearanceManager.shared
     @State private var showIgnoreRules = false
+    @State private var hasUnseenAIResult = false
     /// The tab's custom name survives relaunches along with the window.
     @SceneStorage("tabTitle") private var storedTabTitle = ""
 
@@ -38,10 +40,10 @@ struct ContentView: View {
             }
             .animation(.easeInOut(duration: 0.18), value: document.search.isPresented)
             Divider()
-            StatusBar(document: document)
+            StatusBar(document: document, rewrite: rewrite, hasUnseenAIResult: hasUnseenAIResult)
         }
         .frame(minWidth: 760, minHeight: 440)
-        .toolbar { DiffToolbar(document: document, showIgnoreRules: $showIgnoreRules) }
+        .toolbar { DiffToolbar(document: document, rewrite: rewrite, showIgnoreRules: $showIgnoreRules) }
         .inspector(isPresented: $document.showInsights) {
             InsightsPanel(document: document)
                 .inspectorColumnWidth(min: 260, ideal: 310, max: 460)
@@ -53,11 +55,31 @@ struct ContentView: View {
             DocumentRouter.shared.register(document, window: window)
             WindowTabs.showTabBar(in: window)
         })
+        .background(
+            AIWindowPresenter(
+                isPresented: $document.isShowingAI,
+                isRenamingTab: document.isRenamingTab,
+                requestID: document.aiRequestID,
+                title: "AI — \(document.displayTabTitle)",
+                appearance: appearanceManager.effectiveNSAppearance,
+                document: document,
+                session: rewrite
+            )
+        )
         .sheet(isPresented: $showIgnoreRules) { IgnoreRulesSheet(document: document) }
         .sheet(isPresented: $document.isRenamingTab) { RenameTabSheet(document: document) }
-        .sheet(isPresented: $document.isShowingAI) { RewriteSheet(document: document, session: rewrite) }
         .onAppear { if document.tabTitle.isEmpty { document.tabTitle = storedTabTitle } }
         .onChange(of: document.tabTitle) { _, title in storedTabTitle = title }
+        .onChange(of: document.isShowingAI) { _, showing in
+            if showing { hasUnseenAIResult = false }
+        }
+        .onChange(of: rewrite.phase) { _, phase in
+            if phase.isRunning {
+                hasUnseenAIResult = false
+            } else if (phase == .finished || { if case .failed = phase { return true }; return false }()), !document.isShowingAI {
+                hasUnseenAIResult = true
+            }
+        }
         .alert("Couldn’t open file", isPresented: Binding(get: { document.errorMessage != nil }, set: { if !$0 { document.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -168,6 +190,8 @@ struct EditorPane: View {
 
 struct StatusBar: View {
     @ObservedObject var document: DiffDocument
+    @ObservedObject var rewrite: RewriteSession
+    var hasUnseenAIResult: Bool = false
 
     /// The bar picks the richest layout that fits, so narrow windows (or an open
     /// Insights panel) drop detail instead of truncating labels mid-word.
@@ -207,6 +231,7 @@ struct StatusBar: View {
             if document.isComputing {
                 ProgressView().controlSize(.small)
             }
+            aiStatusButton
             if let selection = document.selection {
                 selectionLabel(selection, detail)
             }
@@ -218,6 +243,48 @@ struct StatusBar: View {
                 Text(document.options.level.title)
                     .foregroundStyle(.tertiary)
             }
+        }
+    }
+
+    // MARK: AI status
+
+    @ViewBuilder
+    private var aiStatusButton: some View {
+        if rewrite.phase.isRunning {
+            Button {
+                document.showAI(rewrite.runTask ?? .rewrite)
+            } label: {
+                HStack(spacing: 5) {
+                    ProgressView().controlSize(.small)
+                    Text(aiRunningLabel)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("AI is running in the background — click to show the AI window")
+        } else if hasUnseenAIResult {
+            Button {
+                document.showAI(rewrite.runTask ?? .rewrite)
+            } label: {
+                if case .failed = rewrite.phase {
+                    Label("AI failed", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(DiffPalette.removed)
+                } else {
+                    Label("AI ready", systemImage: "sparkles")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Click to view the AI result")
+        }
+    }
+
+    private var aiRunningLabel: String {
+        if rewrite.isThinking { return "AI thinking…" }
+        switch rewrite.phase {
+        case .auditing: return "AI checking…"
+        case .summarizing: return "AI summarizing…"
+        default: return "AI writing…"
         }
     }
 
